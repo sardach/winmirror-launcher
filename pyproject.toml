@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "winmirror-launcher"
+version = "0.1.0"
+description = "Base separada derivada de winmirror para evolucionar a un launcher visual de ventanas X11"
+requires-python = ">=3.10"
+
+[project.scripts]
+winmirror-launcher = "winmirror_launcher.cli:main"
