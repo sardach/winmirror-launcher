@@ -7,9 +7,11 @@ gi.require_version("Gtk", "3.0")
 
 from gi.repository import Gtk
 
+from .control_center import main as control_center_main
 from .mirror import SimpleMirrorWindow
 from .panel import LauncherPanelWindow
 from .persistence import StateStore
+from .simple_panel import DEFAULT_TILE_HEIGHT, DEFAULT_TILE_WIDTH, SimpleLauncherPanel
 from .smoke import MultiMirrorSmokeWindow
 from .window_model import WindowInfo
 from .window_registry import WindowRegistry
@@ -22,6 +24,16 @@ def build_parser():
             "Base separada derivada de winmirror para evolucionar hacia un "
             "launcher visual de ventanas X11."
         )
+    )
+    parser.add_argument(
+        "--gui",
+        action="store_true",
+        help="Abre el centro de control GUI de Winmirror Launcher",
+    )
+    parser.add_argument(
+        "--control-center",
+        action="store_true",
+        help="Alias de --gui",
     )
     parser.add_argument(
         "--window-id",
@@ -67,12 +79,17 @@ def build_parser():
     parser.add_argument(
         "--panel",
         action="store_true",
-        help="Abre el panel launcher explicitamente",
+        help="Abre el panel simple launcher explicitamente",
+    )
+    parser.add_argument(
+        "--advanced-panel",
+        action="store_true",
+        help="Abre el panel experimental avanzado anterior",
     )
     parser.add_argument(
         "--config",
         action="store_true",
-        help="Abre el panel launcher y su ventana de configuracion GUI",
+        help="Abre el centro de control GUI",
     )
     parser.add_argument(
         "--limit",
@@ -120,6 +137,56 @@ def build_parser():
         default=None,
         help="Intervalo de refresco en ms para modo timed (usa estado guardado si no se indica)",
     )
+    parser.add_argument(
+        "--tile-width",
+        type=int,
+        default=DEFAULT_TILE_WIDTH,
+        help=f"Ancho maximo de cada espejo en el panel simple (default: {DEFAULT_TILE_WIDTH})",
+    )
+    parser.add_argument(
+        "--tile-height",
+        type=int,
+        default=DEFAULT_TILE_HEIGHT,
+        help=f"Alto maximo de cada espejo en el panel simple (default: {DEFAULT_TILE_HEIGHT})",
+    )
+    parser.add_argument(
+        "--show-title",
+        action="store_true",
+        help="Muestra el titulo de la ventana sobre cada espejo del panel simple",
+    )
+    parser.add_argument(
+        "--show-close",
+        action="store_true",
+        help="Muestra una x para cerrar la ventana real en cada espejo del panel simple",
+    )
+    parser.add_argument(
+        "--show-workspace",
+        action="store_true",
+        help="Muestra el numero de escritorio/workspace en cada espejo del panel simple",
+    )
+    parser.add_argument(
+        "--hover-expand",
+        action="store_true",
+        help="Agranda temporalmente el espejo al pasar el cursor",
+    )
+    parser.add_argument(
+        "--hover-mode",
+        choices=["off", "soft", "medium", "large"],
+        default=None,
+        help="Intensidad de agrandado al pasar el cursor en el panel simple",
+    )
+    parser.add_argument(
+        "--show-borders",
+        action="store_true",
+        help="Muestra bordes finos entre ventanas en el panel simple",
+    )
+    parser.add_argument(
+        "--exclude-window",
+        action="append",
+        type=parse_window_id,
+        default=[],
+        help="Excluye una ventana concreta del panel simple por ID decimal o hex",
+    )
     return parser
 
 
@@ -139,6 +206,9 @@ def main(argv=None):
             print(f"{info.window_hex:<12} {info.wm_class:<25} {info.title}")
         return 0
 
+    if args.gui or args.control_center or args.config:
+        return control_center_main()
+
     if not ensure_x11():
         print("winmirror-launcher solo soporta X11 por ahora.", file=sys.stderr)
         return 1
@@ -157,11 +227,37 @@ def main(argv=None):
         Gtk.main()
         return 0
 
-    open_panel = args.panel or args.config or (
-        args.window_id is None and not args.pick and not args.smoke_multi
+    open_panel = args.panel or (
+        args.window_id is None and not args.pick and not args.smoke_multi and not args.advanced_panel
     )
 
     if open_panel:
+        windows = registry.list_windows()
+        if not windows:
+            raise RuntimeError("No hay ventanas disponibles para el panel.")
+        SimpleLauncherPanel(
+            windows=windows,
+            tile_width=args.tile_width,
+            tile_height=args.tile_height,
+            fps=min(args.fps, 12.0),
+            title=args.title,
+            show_title=args.show_title,
+            show_close=args.show_close,
+            show_workspace=args.show_workspace,
+            hover_expand=args.hover_expand,
+            hover_mode=args.hover_mode,
+            show_borders=args.show_borders,
+            excluded_window_ids=args.exclude_window,
+            registry=registry,
+        )
+        Gtk.main()
+        return 0
+
+    open_advanced_panel = args.advanced_panel or (
+        args.window_id is None and not args.pick and not args.smoke_multi
+    )
+
+    if open_advanced_panel:
         windows = registry.list_windows()[: max(1, args.limit)]
         if not windows:
             raise RuntimeError("No hay ventanas disponibles para el panel.")

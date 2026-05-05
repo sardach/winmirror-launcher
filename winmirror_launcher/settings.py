@@ -4,6 +4,15 @@ gi.require_version("Gtk", "3.0")
 
 from gi.repository import Gtk
 
+from .persistence import (
+    MAX_PANEL_SPACING,
+    MAX_TILE_HEIGHT,
+    MAX_TILE_WIDTH,
+    MIN_PANEL_SPACING,
+    MIN_TILE_HEIGHT,
+    MIN_TILE_WIDTH,
+)
+
 
 class SettingsWindow:
     def __init__(self, panel):
@@ -32,9 +41,9 @@ class SettingsWindow:
         self.refresh_mode_combo = self.add_combo(grid, 3, "Refresh", ["live", "timed"], panel.refresh_mode)
 
         self.refresh_spin = self.add_spin(grid, 4, "Intervalo ms", panel.refresh_interval_ms, 100, 10000, 100)
-        self.tile_width_spin = self.add_spin(grid, 5, "Ancho tile", panel.tile_width, 96, 480, 4)
-        self.tile_height_spin = self.add_spin(grid, 6, "Alto tile", panel.tile_height, 72, 320, 4)
-        self.spacing_spin = self.add_spin(grid, 7, "Espaciado", panel.panel_spacing, 2, 24, 1)
+        self.tile_width_spin = self.add_spin(grid, 5, "Ancho tile", panel.tile_width, MIN_TILE_WIDTH, MAX_TILE_WIDTH, 4)
+        self.tile_height_spin = self.add_spin(grid, 6, "Alto tile", panel.tile_height, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, 4)
+        self.spacing_spin = self.add_spin(grid, 7, "Espaciado", panel.panel_spacing, MIN_PANEL_SPACING, MAX_PANEL_SPACING, 1)
 
         self.workspace_check = self.add_check(grid, 8, "Mostrar workspace", panel.show_workspace_badge)
         self.title_check = self.add_check(grid, 9, "Mostrar titulo", panel.show_title)

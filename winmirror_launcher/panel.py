@@ -6,7 +6,18 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 
 from .actions import WindowActions
-from .persistence import StateStore
+from .persistence import (
+    MAX_PANEL_HEIGHT,
+    MAX_PANEL_WIDTH,
+    MAX_TILE_HEIGHT,
+    MAX_TILE_WIDTH,
+    MIN_PANEL_HEIGHT,
+    MIN_PANEL_WIDTH,
+    MIN_TILE_HEIGHT,
+    MIN_TILE_WIDTH,
+    StateStore,
+    clamp_int,
+)
 from .tile import MirrorTile
 
 
@@ -48,9 +59,9 @@ class LauncherPanelWindow:
         self.hover_expand_enabled = hover_expand_enabled
         self.refresh_mode = refresh_mode
         self.refresh_interval_ms = int(refresh_interval_ms)
-        self.tile_width = int(tile_width)
-        self.tile_height = int(tile_height)
-        self.panel_spacing = int(panel_spacing)
+        self.tile_width = clamp_int(tile_width, MIN_TILE_WIDTH, MAX_TILE_WIDTH, 120)
+        self.tile_height = clamp_int(tile_height, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, 78)
+        self.panel_spacing = clamp_int(panel_spacing, 2, 16, 4)
         self.state_store = state_store or StateStore()
         self.state = self.state_store.load()
         self.tiles = []
@@ -69,6 +80,7 @@ class LauncherPanelWindow:
         self.win.set_decorated(not no_decorations)
         self.apply_panel_mode(always_on_top, no_decorations)
         self.apply_saved_geometry()
+        self.apply_geometry_limits()
 
         outer = Gtk.ScrolledWindow()
         if layout_mode == "vertical":
@@ -125,8 +137,8 @@ class LauncherPanelWindow:
 
     def apply_saved_geometry(self):
         geometry = self.state.get("geometry", {})
-        width = int(geometry.get("width") or 900)
-        height = int(geometry.get("height") or 132)
+        width = clamp_int(geometry.get("width"), MIN_PANEL_WIDTH, MAX_PANEL_WIDTH, 760)
+        height = clamp_int(geometry.get("height"), MIN_PANEL_HEIGHT, MAX_PANEL_HEIGHT, 104)
         self.win.set_default_size(width, height)
         self.pending_geometry = {
             "x": geometry.get("x"),
@@ -134,6 +146,18 @@ class LauncherPanelWindow:
             "width": width,
             "height": height,
         }
+
+    def apply_geometry_limits(self):
+        geometry = Gdk.Geometry()
+        geometry.min_width = MIN_PANEL_WIDTH
+        geometry.min_height = MIN_PANEL_HEIGHT
+        geometry.max_width = MAX_PANEL_WIDTH
+        geometry.max_height = MAX_PANEL_HEIGHT
+        self.win.set_geometry_hints(
+            None,
+            geometry,
+            Gdk.WindowHints.MIN_SIZE | Gdk.WindowHints.MAX_SIZE,
+        )
 
     def apply_fixed_position(self):
         if self.panel_mode != "fixed":
@@ -369,6 +393,9 @@ class LauncherPanelWindow:
         self.tile_width = int(settings.get("tile_width", self.tile_width))
         self.tile_height = int(settings.get("tile_height", self.tile_height))
         self.panel_spacing = int(settings.get("panel_spacing", self.panel_spacing))
+        self.tile_width = clamp_int(self.tile_width, MIN_TILE_WIDTH, MAX_TILE_WIDTH, 120)
+        self.tile_height = clamp_int(self.tile_height, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, 78)
+        self.panel_spacing = clamp_int(self.panel_spacing, 2, 16, 4)
 
         parent = self.container.get_parent()
         if parent is not None:

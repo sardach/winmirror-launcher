@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 DEFAULT_STATE = {
-    "state_version": 2,
+    "state_version": 3,
     "layout_mode": "horizontal",
     "panel_mode": "floating",
     "anchor_edge": "top",
@@ -13,17 +13,36 @@ DEFAULT_STATE = {
     "hover_expand_enabled": False,
     "refresh_mode": "live",
     "refresh_interval_ms": 1000,
-    "tile_width": 156,
-    "tile_height": 96,
-    "panel_spacing": 6,
+    "tile_width": 120,
+    "tile_height": 78,
+    "panel_spacing": 4,
     "geometry": {
         "x": None,
         "y": None,
-        "width": 900,
-        "height": 132,
+        "width": 760,
+        "height": 104,
     },
     "tile_order": [],
 }
+
+MIN_TILE_WIDTH = 88
+MAX_TILE_WIDTH = 220
+MIN_TILE_HEIGHT = 60
+MAX_TILE_HEIGHT = 160
+MIN_PANEL_SPACING = 2
+MAX_PANEL_SPACING = 16
+MIN_PANEL_WIDTH = 360
+MAX_PANEL_WIDTH = 1400
+MIN_PANEL_HEIGHT = 84
+MAX_PANEL_HEIGHT = 520
+
+
+def clamp_int(value, lower, upper, fallback):
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(lower, min(upper, value))
 
 
 class StateStore:
@@ -64,6 +83,37 @@ class StateStore:
 
         if not isinstance(state.get("state_version"), int):
             state["state_version"] = DEFAULT_STATE["state_version"]
+
+        state["tile_width"] = clamp_int(
+            state.get("tile_width"),
+            MIN_TILE_WIDTH,
+            MAX_TILE_WIDTH,
+            DEFAULT_STATE["tile_width"],
+        )
+        state["tile_height"] = clamp_int(
+            state.get("tile_height"),
+            MIN_TILE_HEIGHT,
+            MAX_TILE_HEIGHT,
+            DEFAULT_STATE["tile_height"],
+        )
+        state["panel_spacing"] = clamp_int(
+            state.get("panel_spacing"),
+            MIN_PANEL_SPACING,
+            MAX_PANEL_SPACING,
+            DEFAULT_STATE["panel_spacing"],
+        )
+        state["geometry"]["width"] = clamp_int(
+            state["geometry"].get("width"),
+            MIN_PANEL_WIDTH,
+            MAX_PANEL_WIDTH,
+            DEFAULT_STATE["geometry"]["width"],
+        )
+        state["geometry"]["height"] = clamp_int(
+            state["geometry"].get("height"),
+            MIN_PANEL_HEIGHT,
+            MAX_PANEL_HEIGHT,
+            DEFAULT_STATE["geometry"]["height"],
+        )
 
         return state
 
