@@ -182,9 +182,44 @@ def build_parser():
         help="Intensidad de agrandado al pasar el cursor en el panel simple",
     )
     parser.add_argument(
+        "--hover-scale",
+        type=float,
+        default=None,
+        help="Escala exacta del zoom visual al pasar el cursor (1.0 a 2.5)",
+    )
+    parser.add_argument(
         "--show-borders",
         action="store_true",
         help="Muestra bordes finos entre ventanas en el panel simple",
+    )
+    parser.add_argument(
+        "--label-mode",
+        choices=["title", "app"],
+        default="title",
+        help="Texto del overlay: titulo dinamico o app/ejecutable (default: title)",
+    )
+    parser.add_argument(
+        "--sticky-workspaces",
+        action="store_true",
+        help="Hace que la barra del panel simple siga en todos los escritorios",
+    )
+    parser.add_argument(
+        "--idle-mode",
+        choices=["off", "collapse", "hide"],
+        default="off",
+        help="Comportamiento del panel simple cuando no tiene cursor",
+    )
+    parser.add_argument(
+        "--idle-delay-ms",
+        type=int,
+        default=700,
+        help="Demora antes de reducir/ocultar el panel simple (default: 700)",
+    )
+    parser.add_argument(
+        "--order",
+        choices=["last-used", "name", "manual"],
+        default="last-used",
+        help="Orden inicial del panel simple (default: last-used)",
     )
     parser.add_argument(
         "--exclude-window",
@@ -246,13 +281,20 @@ def main(argv=None):
             tile_width=args.tile_width,
             tile_height=args.tile_height,
             fps=min(args.fps, 12.0),
+            frame_interval_seconds=args.frame_interval_seconds,
             title=args.title,
             show_title=args.show_title,
             show_close=args.show_close,
             show_workspace=args.show_workspace,
             hover_expand=args.hover_expand,
             hover_mode=args.hover_mode,
+            hover_scale=args.hover_scale,
             show_borders=args.show_borders,
+            order_mode=args.order,
+            label_mode=args.label_mode,
+            sticky_workspaces=args.sticky_workspaces,
+            idle_mode=args.idle_mode,
+            idle_delay_ms=args.idle_delay_ms,
             excluded_window_ids=args.exclude_window,
             registry=registry,
         )
