@@ -958,7 +958,21 @@ class SimpleLauncherPanel:
         self.add_check_item(menu, "Mostrar cerrar", self.show_close, lambda active: self.update_options(show_close=active))
         self.add_check_item(menu, "Mostrar workspace", self.show_workspace, lambda active: self.update_options(show_workspace=active))
         self.add_check_item(menu, "Mostrar bordes", self.show_borders, lambda active: self.update_options(show_borders=active))
+        self.add_check_item(menu, "Editar orden", self.order_edit_mode, self.set_order_edit_mode)
         menu.append(Gtk.SeparatorMenuItem())
+
+        order_menu = Gtk.Menu()
+        for label, mode in (("Ultima app usada", "last-used"), ("Nombre", "name"), ("Manual", "manual")):
+            item = Gtk.RadioMenuItem.new_with_label_from_widget(
+                order_menu.get_children()[0] if order_menu.get_children() else None,
+                label,
+            )
+            item.set_active(self.order_mode == mode)
+            item.connect("toggled", lambda check, value=mode: check.get_active() and self.set_order_mode(value))
+            order_menu.append(item)
+        order_item = Gtk.MenuItem(label="Orden")
+        order_item.set_submenu(order_menu)
+        menu.append(order_item)
 
         hover_menu = Gtk.Menu()
         for label, mode in (("Sin agrandar", "off"), ("Suave", "soft"), ("Medio", "medium"), ("Grande", "large")):
@@ -968,6 +982,18 @@ class SimpleLauncherPanel:
             )
             item.set_active(self.hover_mode == mode)
             item.connect("toggled", lambda check, value=mode: check.get_active() and self.update_options(hover_mode=value))
+            hover_menu.append(item)
+        hover_menu.append(Gtk.SeparatorMenuItem())
+        reduce_item = Gtk.MenuItem(label="Disminuir efecto")
+        reduce_item.connect("activate", lambda *_args: self.adjust_hover_scale(-0.1))
+        hover_menu.append(reduce_item)
+        increase_item = Gtk.MenuItem(label="Aumentar efecto")
+        increase_item.connect("activate", lambda *_args: self.adjust_hover_scale(0.1))
+        hover_menu.append(increase_item)
+        hover_menu.append(Gtk.SeparatorMenuItem())
+        for label, scale in (("Efecto 125%", 1.25), ("Efecto 150%", 1.5), ("Efecto 200%", 2.0)):
+            item = Gtk.MenuItem(label=label)
+            item.connect("activate", lambda _item, value=scale: self.set_hover_scale(value))
             hover_menu.append(item)
         hover_item = Gtk.MenuItem(label="Agrandar al pasar")
         hover_item.set_submenu(hover_menu)
@@ -987,9 +1013,40 @@ class SimpleLauncherPanel:
             item = Gtk.MenuItem(label=label)
             item.connect("activate", lambda _item, value=fps: self.set_fps(value))
             fps_menu.append(item)
+        fps_menu.append(Gtk.SeparatorMenuItem())
+        for seconds in (2, 5, 10, 30, 60):
+            item = Gtk.MenuItem(label=f"1 frame cada {seconds}s")
+            item.connect("activate", lambda _item, value=seconds: self.set_frame_interval_seconds(value))
+            fps_menu.append(item)
         fps_item = Gtk.MenuItem(label="FPS")
         fps_item.set_submenu(fps_menu)
         menu.append(fps_item)
+
+        label_menu = Gtk.Menu()
+        for label, mode in (("Titulo de ventana", "title"), ("App / ejecutable", "app")):
+            item = Gtk.RadioMenuItem.new_with_label_from_widget(
+                label_menu.get_children()[0] if label_menu.get_children() else None,
+                label,
+            )
+            item.set_active(self.label_mode == mode)
+            item.connect("toggled", lambda check, value=mode: check.get_active() and self.update_options(label_mode=value))
+            label_menu.append(item)
+        label_item = Gtk.MenuItem(label="Texto mostrado")
+        label_item.set_submenu(label_menu)
+        menu.append(label_item)
+
+        idle_menu = Gtk.Menu()
+        for label, mode in (("Siempre visible", "off"), ("Reducir sin cursor", "collapse"), ("Ocultar sin cursor", "hide")):
+            item = Gtk.RadioMenuItem.new_with_label_from_widget(
+                idle_menu.get_children()[0] if idle_menu.get_children() else None,
+                label,
+            )
+            item.set_active(self.idle_mode == mode)
+            item.connect("toggled", lambda check, value=mode: check.get_active() and self.set_idle_mode(value))
+            idle_menu.append(item)
+        idle_item = Gtk.MenuItem(label="Sin cursor")
+        idle_item.set_submenu(idle_menu)
+        menu.append(idle_item)
 
         menu.append(Gtk.SeparatorMenuItem())
         refresh_item = Gtk.MenuItem(label="Actualizar ahora")
@@ -1027,6 +1084,47 @@ class SimpleLauncherPanel:
         item = Gtk.MenuItem(label=f"{label} ({width}x{height})")
         item.connect("activate", lambda *_args: self.set_tile_size(width, height))
         menu.append(item)
+
+    def set_order_edit_mode(self, active):
+        self.order_edit_mode = bool(active)
+        if self.order_edit_mode:
+            self.set_order_mode("manual", apply_order=False)
+        for tile in self.tiles:
+            tile.queue_draw()
+
+    def set_order_mode(self, mode, apply_order=True):
+        self.order_mode = normalize_order_mode(mode)
+        if self.order_mode == "manual":
+            self.order_edit_mode = True
+        else:
+            self.order_edit_mode = False
+        if apply_order:
+            self.apply_order()
+        for tile in self.tiles:
+            tile.queue_draw()
+
+    def set_idle_mode(self, mode):
+        self.idle_mode = normalize_idle_mode(mode)
+        if self.idle_mode == "off":
+            self.restore_from_idle()
+        elif not self.pointer_inside_panel:
+            self.schedule_idle_mode()
+
+    def move_tile(self, tile, delta):
+        if tile not in self.tiles or not self.tiles:
+            return
+        old_index = self.tiles.index(tile)
+        new_index = max(0, min(len(self.tiles) - 1, old_index + int(delta)))
+        if new_index == old_index:
+            return
+        self.set_order_mode("manual", apply_order=False)
+        self.tiles.pop(old_index)
+        self.tiles.insert(new_index, tile)
+        self.current_columns = 0
+        self.current_rows = 0
+        self.fit_tiles_to_window()
+        for item in self.tiles:
+            item.queue_draw()
 
     def update_options(
         self,
