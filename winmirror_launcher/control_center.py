@@ -19,7 +19,7 @@ class ControlCenter:
 
         self.win = Gtk.Window()
         self.win.set_title("Winmirror Launcher")
-        self.win.set_default_size(520, 460)
+        self.win.set_default_size(560, 520)
         self.win.connect("destroy", self.on_destroy)
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -36,11 +36,17 @@ class ControlCenter:
 
         self.width_spin = self.add_spin(controls, 0, "Ancho espejo", DEFAULT_TILE_WIDTH, MIN_TILE_WIDTH, MAX_TILE_WIDTH, 4)
         self.height_spin = self.add_spin(controls, 1, "Alto espejo", DEFAULT_TILE_HEIGHT, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, 4)
-        self.fps_spin = self.add_spin(controls, 2, "FPS", 8, 0, 12, 1)
+        self.fps_spin = self.add_spin(controls, 2, "FPS", 1, 0, 12, 1)
         self.title_check = self.add_check(controls, 3, "Mostrar nombre", False)
         self.close_check = self.add_check(controls, 4, "Mostrar cerrar", False)
         self.workspace_check = self.add_check(controls, 5, "Mostrar workspace", False)
         self.hover_check = self.add_check(controls, 6, "Agrandar al pasar", False)
+        self.hover_scale_spin = self.add_float_spin(controls, 7, "Efecto agrandar", 1.25, 1.0, 2.5, 0.05)
+        self.order_combo = self.add_order_combo(controls, 8)
+        self.label_combo = self.add_label_combo(controls, 9)
+        self.sticky_check = self.add_check(controls, 10, "Seguir escritorios", False)
+        self.idle_combo = self.add_idle_combo(controls, 11)
+        self.frame_interval_spin = self.add_float_spin(controls, 12, "1 frame cada N s", 0, 0, 300, 1)
 
         buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         outer.pack_start(buttons, False, False, 0)
@@ -80,6 +86,16 @@ class ControlCenter:
         grid.attach(spin, 1, row, 1, 1)
         return spin
 
+    def add_float_spin(self, grid, row, label_text, value, lower, upper, step):
+        label = Gtk.Label(label=label_text)
+        label.set_xalign(0.0)
+        grid.attach(label, 0, row, 1, 1)
+
+        adjustment = Gtk.Adjustment(value=value, lower=lower, upper=upper, step_increment=step)
+        spin = Gtk.SpinButton(adjustment=adjustment, climb_rate=0.05, digits=2)
+        grid.attach(spin, 1, row, 1, 1)
+        return spin
+
     def add_check(self, grid, row, label_text, active):
         label = Gtk.Label(label=label_text)
         label.set_xalign(0.0)
@@ -89,6 +105,44 @@ class ControlCenter:
         check.set_active(bool(active))
         grid.attach(check, 1, row, 1, 1)
         return check
+
+    def add_order_combo(self, grid, row):
+        label = Gtk.Label(label="Orden")
+        label.set_xalign(0.0)
+        grid.attach(label, 0, row, 1, 1)
+
+        combo = Gtk.ComboBoxText()
+        combo.append("last-used", "Ultima app usada")
+        combo.append("name", "Nombre")
+        combo.append("manual", "Manual")
+        combo.set_active_id("last-used")
+        grid.attach(combo, 1, row, 1, 1)
+        return combo
+
+    def add_label_combo(self, grid, row):
+        label = Gtk.Label(label="Texto mostrado")
+        label.set_xalign(0.0)
+        grid.attach(label, 0, row, 1, 1)
+
+        combo = Gtk.ComboBoxText()
+        combo.append("title", "Titulo de ventana")
+        combo.append("app", "App / ejecutable")
+        combo.set_active_id("title")
+        grid.attach(combo, 1, row, 1, 1)
+        return combo
+
+    def add_idle_combo(self, grid, row):
+        label = Gtk.Label(label="Sin cursor")
+        label.set_xalign(0.0)
+        grid.attach(label, 0, row, 1, 1)
+
+        combo = Gtk.ComboBoxText()
+        combo.append("off", "Siempre visible")
+        combo.append("collapse", "Reducir")
+        combo.append("hide", "Ocultar")
+        combo.set_active_id("off")
+        grid.attach(combo, 1, row, 1, 1)
+        return combo
 
     def on_launch_simple(self, *_args):
         command = [
