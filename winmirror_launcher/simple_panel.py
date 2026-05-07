@@ -1133,7 +1133,9 @@ class SimpleLauncherPanel:
         show_workspace=None,
         hover_expand=None,
         hover_mode=None,
+        hover_scale=None,
         show_borders=None,
+        label_mode=None,
     ):
         if show_title is not None:
             self.show_title = bool(show_title)
@@ -1144,31 +1146,54 @@ class SimpleLauncherPanel:
         if hover_mode is not None or hover_expand is not None:
             self.hover_mode = normalize_hover_mode(hover_mode, hover_expand if hover_expand is not None else self.hover_expand)
             self.hover_expand = self.hover_mode != "off"
+            if hover_scale is None:
+                self.hover_scale = normalize_hover_scale(None, self.hover_mode, self.hover_expand)
+        if hover_scale is not None:
+            self.hover_scale = normalize_hover_scale(hover_scale, self.hover_mode, self.hover_expand)
+            self.hover_expand = self.hover_scale > 1.0
+            if self.hover_scale <= 1.0:
+                self.hover_mode = "off"
         if show_borders is not None:
             self.show_borders = bool(show_borders)
+        if label_mode is not None:
+            self.label_mode = normalize_label_mode(label_mode)
         for tile in self.tiles:
             tile.set_display_options(
                 show_title=self.show_title,
                 show_close=self.show_close,
                 show_workspace=self.show_workspace,
                 hover_mode=self.hover_mode,
+                hover_scale=self.hover_scale,
                 show_borders=self.show_borders,
+                label_mode=self.label_mode,
             )
+        if not self.hover_expand or self.hover_scale <= 1.0:
+            self.hovered_tile = None
+        self.apply_tile_size_requests()
+
+    def set_hover_scale(self, scale):
+        self.update_options(hover_scale=scale)
+
+    def adjust_hover_scale(self, delta):
+        self.set_hover_scale(self.hover_scale + float(delta))
 
     def set_tile_size(self, width, height):
         self.tile_width = clamp(width, MIN_TILE_WIDTH, MAX_TILE_WIDTH, DEFAULT_TILE_WIDTH)
         self.tile_height = clamp(height, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, DEFAULT_TILE_HEIGHT)
         for tile in self.tiles:
             tile.set_dimensions(self.tile_width, self.tile_height)
-        screen = Gdk.Screen.get_default()
-        screen_width = screen.get_width() if screen is not None else 1200
-        target_width = min(max(self.tile_width, len(self.tiles) * self.tile_width), max(360, screen_width - 80))
-        self.win.resize(target_width, self.tile_height)
+        self.fit_tiles_to_window()
 
     def set_fps(self, fps):
-        self.fps = max(1.0, min(12.0, float(fps)))
+        self.fps = max(0.0, min(12.0, float(fps)))
+        self.frame_interval_seconds = None
         for tile in self.tiles:
             tile.set_fps(self.fps)
+
+    def set_frame_interval_seconds(self, seconds):
+        self.frame_interval_seconds = seconds
+        for tile in self.tiles:
+            tile.set_frame_interval_seconds(seconds)
 
     def refresh_all_tiles(self):
         for tile in self.tiles:
@@ -1177,14 +1202,16 @@ class SimpleLauncherPanel:
     def exclude_window(self, tile):
         self.excluded_window_ids.add(int(tile.window_info.window_id))
         self.remove_tile(tile)
-        self.fit_tiles_to_current_width()
+        self.current_columns = 0
+        self.current_rows = 0
+        self.fit_tiles_to_window()
 
     def restore_excluded_windows(self):
         self.excluded_window_ids.clear()
         self.reconcile_windows()
 
     def on_configure_event(self, *_args):
-        self.fit_tiles_to_current_width()
+        self.fit_tiles_to_window()
         for tile in self.tiles:
             tile.queue_draw()
         return False
@@ -1193,6 +1220,15 @@ class SimpleLauncherPanel:
         if self.window_refresh_source_id is not None:
             GLib.source_remove(self.window_refresh_source_id)
             self.window_refresh_source_id = None
+        if self.active_window_source_id is not None:
+            GLib.source_remove(self.active_window_source_id)
+            self.active_window_source_id = None
+        if self.idle_source_id is not None:
+            GLib.source_remove(self.idle_source_id)
+            self.idle_source_id = None
+        if self.hidden_poll_source_id is not None:
+            GLib.source_remove(self.hidden_poll_source_id)
+            self.hidden_poll_source_id = None
         if Gtk.main_level() > 0:
             Gtk.main_quit()
 
