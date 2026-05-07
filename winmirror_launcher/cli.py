@@ -53,8 +53,14 @@ def build_parser():
     parser.add_argument(
         "--fps",
         type=float,
-        default=30.0,
-        help="Frames por segundo del espejo (default: 30)",
+        default=1.0,
+        help="Frames por segundo del espejo (default: 1)",
+    )
+    parser.add_argument(
+        "--frame-interval-seconds",
+        type=float,
+        default=None,
+        help="Refresca a 1 frame cada N segundos en el panel simple",
     )
     parser.add_argument(
         "--title",
