@@ -301,9 +301,14 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         window_id = str(int(self.window_info.window_id))
         proc = run_command(["xdotool", "windowactivate", "--sync", window_id])
         if proc is not None and proc.returncode == 0:
+            if self.panel is not None:
+                self.panel.note_window_used(self.window_info.window_id)
             return True
         proc = run_command(["wmctrl", "-ia", self.window_info.window_hex])
-        return proc is not None and proc.returncode == 0
+        activated = proc is not None and proc.returncode == 0
+        if activated and self.panel is not None:
+            self.panel.note_window_used(self.window_info.window_id)
+        return activated
 
     def close_window(self):
         proc = run_command(["wmctrl", "-ic", self.window_info.window_hex])
@@ -313,6 +318,9 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         if int(event.button) == 3 and self.panel is not None:
             self.panel.show_context_menu(event, self)
             return True
+        if self.panel is not None and self.panel.order_edit_mode and int(event.button) == 1:
+            if self.handle_order_edit_click(event):
+                return True
         alloc = self.get_allocation()
         if self.show_close and int(event.button) == 1:
             if event.x >= alloc.width - 18 and event.y <= 18:
@@ -326,18 +334,41 @@ class SimpleMirrorTile(Gtk.DrawingArea):
             return True
         return False
 
+    def handle_order_edit_click(self, event):
+        alloc = self.get_allocation()
+        width = max(1, alloc.width)
+        height = max(1, alloc.height)
+        control_size = max(16, min(28, min(width, height) // 3))
+        if event.y <= control_size:
+            if event.x <= control_size:
+                self.panel.move_tile(self, -1)
+                return True
+            if event.x >= width - control_size:
+                self.panel.move_tile(self, 1)
+                return True
+        if event.y >= height - control_size:
+            if event.x <= control_size:
+                self.panel.move_tile(self, -self.panel.current_columns)
+                return True
+            if event.x >= width - control_size:
+                self.panel.move_tile(self, self.panel.current_columns)
+                return True
+        return False
+
     def on_enter(self, *_args):
         self.hovered = True
-        if self.hover_expand:
-            self.set_size_request(self.expanded_width, self.expanded_height)
-            self.queue_resize()
+        if self.panel is not None:
+            self.panel.note_pointer_inside(True)
+            self.panel.set_hovered_tile(self)
+        self.queue_draw()
         return False
 
     def on_leave(self, *_args):
         self.hovered = False
-        if self.hover_expand:
-            self.set_size_request(self.tile_width, self.tile_height)
-            self.queue_resize()
+        if self.panel is not None:
+            self.panel.set_hovered_tile(None)
+            self.panel.note_pointer_inside(False)
+        self.queue_draw()
         return False
 
     def on_draw(self, widget, cr):
@@ -370,8 +401,8 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         cr.paint()
         cr.restore()
 
-        if self.hovered and self.hover_mode != "off":
-            cr.set_source_rgba(1.0, 1.0, 1.0, 0.08)
+        if self.hovered and self.hover_scale > 1.0:
+            cr.set_source_rgba(1.0, 1.0, 1.0, min(0.18, 0.04 + ((self.hover_scale - 1.0) * 0.08)))
             cr.rectangle(0, 0, width, height)
             cr.fill()
         if self.show_borders:
@@ -401,7 +432,7 @@ class SimpleMirrorTile(Gtk.DrawingArea):
             PangoCairo.show_layout(cr, layout)
 
         if self.show_title:
-            title = self.window_info.title[:42]
+            title = self.display_name()[:42]
             layout = widget.create_pango_layout(title)
             layout.set_font_description(Pango.FontDescription("Sans 8"))
             layout.set_ellipsize(Pango.EllipsizeMode.END)
@@ -412,6 +443,38 @@ class SimpleMirrorTile(Gtk.DrawingArea):
             cr.fill()
             cr.set_source_rgb(0.92, 0.92, 0.92)
             cr.move_to(4, max(1, height - th - 3))
+            PangoCairo.show_layout(cr, layout)
+
+        if self.panel is not None and self.panel.order_edit_mode:
+            self.draw_order_controls(widget, cr, width, height)
+
+    def draw_order_controls(self, widget, cr, width, height):
+        control_size = max(16, min(28, min(width, height) // 3))
+        if width < 24 or height < 18:
+            return
+
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.72)
+        for x, y in (
+            (0, 0),
+            (width - control_size, 0),
+            (0, height - control_size),
+            (width - control_size, height - control_size),
+        ):
+            cr.rectangle(x, y, control_size, control_size)
+            cr.fill()
+
+        arrows = (
+            ("<", 0, 0),
+            (">", width - control_size, 0),
+            ("^", 0, height - control_size),
+            ("v", width - control_size, height - control_size),
+        )
+        cr.set_source_rgb(0.95, 0.95, 0.95)
+        for text, x, y in arrows:
+            layout = widget.create_pango_layout(text)
+            layout.set_font_description(Pango.FontDescription("Sans Bold 8"))
+            tw, th = layout.get_pixel_size()
+            cr.move_to(x + (control_size - tw) / 2.0, y + (control_size - th) / 2.0)
             PangoCairo.show_layout(cr, layout)
 
     def draw_badge(self, widget, cr, x, y, text):
@@ -426,7 +489,7 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         PangoCairo.show_layout(cr, layout)
 
     def draw_placeholder(self, widget, cr, width, height):
-        title = self.window_info.title or self.window_info.wm_class or self.window_info.window_hex
+        title = self.display_name() or self.window_info.window_hex
         layout = widget.create_pango_layout(title)
         layout.set_font_description(Pango.FontDescription("Sans Bold 8"))
         layout.set_ellipsize(Pango.EllipsizeMode.END)
