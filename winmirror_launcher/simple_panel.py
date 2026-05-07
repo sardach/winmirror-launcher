@@ -121,9 +121,8 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         self.tile_width = clamp(width, MIN_TILE_WIDTH, MAX_TILE_WIDTH, DEFAULT_TILE_WIDTH)
         self.tile_height = clamp(height, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, DEFAULT_TILE_HEIGHT)
         self.hover_mode = normalize_hover_mode(hover_mode, hover_expand)
-        self.expanded_width = self.compute_expanded_width()
-        self.expanded_height = self.compute_expanded_height()
-        self.interval_ms = refresh_interval_ms(fps)
+        self.hover_scale = normalize_hover_scale(hover_scale, self.hover_mode, hover_expand)
+        self.interval_ms = interval_seconds_to_ms(frame_interval_seconds) or refresh_interval_ms(fps)
         self.source_window = None
         self.current_pixbuf = None
         self.status = ""
@@ -132,9 +131,16 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         self.show_workspace = bool(show_workspace)
         self.hover_expand = self.hover_mode != "off"
         self.show_borders = bool(show_borders)
+        self.label_mode = normalize_label_mode(label_mode)
         self.hovered = False
+        self.dragging = False
+        self.refresh_source_id = None
+        self.layout_width = self.tile_width
+        self.layout_height = self.tile_height
 
-        self.set_size_request(self.tile_width, self.tile_height)
+        self.set_hexpand(True)
+        self.set_vexpand(True)
+        self.set_layout_size(self.layout_width, self.layout_height)
         self.set_tooltip_text(window_info.title)
         self.add_events(
             Gdk.EventMask.BUTTON_PRESS_MASK
@@ -148,17 +154,8 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         self.connect("destroy", self.on_destroy)
 
         self.attach_source()
-        self.refresh_source_id = None
-        self.set_fps(fps)
+        self.set_refresh_interval(self.interval_ms)
         self.refresh()
-
-    def compute_expanded_width(self):
-        factor = HOVER_MODES.get(self.hover_mode, 1.0)
-        return min(MAX_TILE_WIDTH, max(self.tile_width, int(round(self.tile_width * factor))))
-
-    def compute_expanded_height(self):
-        factor = HOVER_MODES.get(self.hover_mode, 1.0)
-        return min(MAX_TILE_HEIGHT, max(self.tile_height, int(round(self.tile_height * factor))))
 
     def on_destroy(self, *_args):
         if self.refresh_source_id is not None:
@@ -166,7 +163,13 @@ class SimpleMirrorTile(Gtk.DrawingArea):
             self.refresh_source_id = None
 
     def set_fps(self, fps):
-        self.interval_ms = refresh_interval_ms(fps)
+        self.set_refresh_interval(refresh_interval_ms(fps))
+
+    def set_frame_interval_seconds(self, seconds):
+        self.set_refresh_interval(interval_seconds_to_ms(seconds))
+
+    def set_refresh_interval(self, interval_ms):
+        self.interval_ms = interval_ms
         if self.refresh_source_id is not None:
             GLib.source_remove(self.refresh_source_id)
             self.refresh_source_id = None
@@ -176,14 +179,20 @@ class SimpleMirrorTile(Gtk.DrawingArea):
     def set_dimensions(self, width, height):
         self.tile_width = clamp(width, MIN_TILE_WIDTH, MAX_TILE_WIDTH, DEFAULT_TILE_WIDTH)
         self.tile_height = clamp(height, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, DEFAULT_TILE_HEIGHT)
-        self.expanded_width = self.compute_expanded_width()
-        self.expanded_height = self.compute_expanded_height()
-        if self.hovered and self.hover_expand:
-            self.set_size_request(self.expanded_width, self.expanded_height)
-        else:
-            self.set_size_request(self.tile_width, self.tile_height)
+        if self.panel is None:
+            self.set_layout_size(self.tile_width, self.tile_height)
         self.queue_resize()
         self.queue_draw()
+
+    def set_layout_size(self, width, height):
+        self.layout_width = max(1, int(round(width)))
+        self.layout_height = max(1, int(round(height)))
+        self.set_size_request(self.layout_width, self.layout_height)
+
+    def release_layout_size(self):
+        self.layout_width = SHRINK_TILE_WIDTH
+        self.layout_height = SHRINK_TILE_HEIGHT
+        self.set_size_request(SHRINK_TILE_WIDTH, SHRINK_TILE_HEIGHT)
 
     def set_display_options(
         self,
@@ -192,7 +201,9 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         show_workspace=None,
         hover_expand=None,
         hover_mode=None,
+        hover_scale=None,
         show_borders=None,
+        label_mode=None,
     ):
         if show_title is not None:
             self.show_title = bool(show_title)
@@ -203,19 +214,36 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         if hover_mode is not None or hover_expand is not None:
             self.hover_mode = normalize_hover_mode(hover_mode, hover_expand if hover_expand is not None else self.hover_expand)
             self.hover_expand = self.hover_mode != "off"
+            if hover_scale is None:
+                self.hover_scale = normalize_hover_scale(None, self.hover_mode, self.hover_expand)
+        if hover_scale is not None:
+            self.hover_scale = normalize_hover_scale(hover_scale, self.hover_mode, self.hover_expand)
+            self.hover_expand = self.hover_scale > 1.0
+            if self.hover_scale <= 1.0:
+                self.hover_mode = "off"
         if show_borders is not None:
             self.show_borders = bool(show_borders)
+        if label_mode is not None:
+            self.label_mode = normalize_label_mode(label_mode)
         self.set_dimensions(self.tile_width, self.tile_height)
+
+    def display_name(self):
+        if self.label_mode == "app":
+            return app_name_from_wm_class(self.window_info.wm_class)
+        return self.window_info.title or app_name_from_wm_class(self.window_info.wm_class)
 
     def attach_source(self):
         display = Gdk.Display.get_default()
         if display is None:
             self.status = "sin display"
             return False
-        self.source_window = GdkX11.X11Window.foreign_new_for_display(
-            display,
-            int(self.window_info.window_id),
-        )
+        try:
+            self.source_window = GdkX11.X11Window.foreign_new_for_display(
+                display,
+                int(self.window_info.window_id),
+            )
+        except (TypeError, ValueError):
+            self.source_window = None
         if self.source_window is None:
             self.status = "cerrada"
             return False
