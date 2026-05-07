@@ -154,7 +154,17 @@ class ControlCenter:
             str(self.height_spin.get_value_as_int()),
             "--fps",
             str(self.fps_spin.get_value_as_int()),
+            "--order",
+            self.order_combo.get_active_id() or "last-used",
+            "--label-mode",
+            self.label_combo.get_active_id() or "title",
+            "--idle-mode",
+            self.idle_combo.get_active_id() or "off",
         ]
+        if self.frame_interval_spin.get_value() > 0:
+            command.extend(["--frame-interval-seconds", f"{self.frame_interval_spin.get_value():.1f}"])
+        if self.sticky_check.get_active():
+            command.append("--sticky-workspaces")
         if self.title_check.get_active():
             command.append("--show-title")
         if self.close_check.get_active():
@@ -163,6 +173,7 @@ class ControlCenter:
             command.append("--show-workspace")
         if self.hover_check.get_active():
             command.append("--hover-expand")
+            command.extend(["--hover-scale", f"{self.hover_scale_spin.get_value():.2f}"])
         subprocess.Popen(command)
 
     def on_stop_panels(self, *_args):
