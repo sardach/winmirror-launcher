@@ -691,22 +691,259 @@ class SimpleLauncherPanel:
                 tile.window_info = info
                 tile.set_tooltip_text(info.title)
 
+        self.apply_order()
         after_ids = [tile.window_info.window_id for tile in self.tiles]
         if before_ids != after_ids:
-            self.fit_tiles_to_current_width()
+            self.fit_tiles_to_window()
         return True
 
-    def fit_tiles_to_current_width(self):
+    def poll_active_window(self):
+        self.note_window_used(self.registry.get_active_window_id())
+        return True
+
+    def note_window_used(self, window_id, apply_order=True):
+        if window_id is None:
+            return
+        window_id = int(window_id)
+        if self.own_window_id is not None and window_id == self.own_window_id:
+            return
+        if window_id not in {tile.window_info.window_id for tile in self.tiles}:
+            return
+        if window_id in self.mru_window_ids:
+            self.mru_window_ids.remove(window_id)
+        self.mru_window_ids.insert(0, window_id)
+        if apply_order and self.order_mode == "last-used":
+            self.apply_order()
+
+    def apply_order(self):
+        if len(self.tiles) < 2:
+            return
+        before_ids = self.tile_ids()
+        if self.order_mode == "name":
+            self.tiles.sort(key=self.window_sort_key)
+        elif self.order_mode == "last-used":
+            mru_rank = {window_id: index for index, window_id in enumerate(self.mru_window_ids)}
+            fallback_rank = {window_id: index for index, window_id in enumerate(before_ids)}
+            self.tiles.sort(
+                key=lambda tile: (
+                    mru_rank.get(tile.window_info.window_id, len(self.tiles) + fallback_rank[tile.window_info.window_id]),
+                    self.window_sort_key(tile),
+                )
+            )
+        if self.tile_ids() != before_ids:
+            self.current_columns = 0
+            self.current_rows = 0
+            self.fit_tiles_to_window()
+
+    def window_sort_key(self, tile):
+        info = tile.window_info
+        title = (info.title or "").casefold()
+        wm_class = (info.wm_class or "").casefold()
+        return (title, wm_class, int(info.window_id))
+
+    def choose_grid_shape(self, width, height, count):
+        if count <= 1:
+            return 1, 1
+        width = max(1, int(width))
+        height = max(1, int(height))
+        best = None
+        for columns in range(1, count + 1):
+            rows = int(math.ceil(float(count) / columns))
+            tile_width = max(1, width // columns)
+            tile_height = max(1, height // rows)
+            visible_area = min(tile_width, MAX_TILE_WIDTH) * min(tile_height, MAX_TILE_HEIGHT)
+            aspect = float(tile_width) / max(1.0, float(tile_height))
+            aspect_penalty = abs(math.log(max(0.1, aspect / 1.6)))
+            empty_slots = (columns * rows) - count
+            score = visible_area - (visible_area * aspect_penalty * 0.18) - (empty_slots * 40)
+            if best is None or score > best[0]:
+                best = (score, columns, rows)
+        return best[1], best[2]
+
+    def relayout_tiles(self, columns, rows):
+        columns = max(1, int(columns))
+        rows = max(1, int(rows))
+        if columns == self.current_columns and rows == self.current_rows:
+            return
+        self.current_columns = columns
+        self.current_rows = rows
+        for tile in self.tiles:
+            self.grid.remove(tile)
+        for index, tile in enumerate(self.tiles):
+            self.grid.attach(tile, index % columns, index // columns, 1, 1)
+        self.grid.show_all()
+
+    def fit_tiles_to_window(self):
         if not self.tiles:
             return
-        alloc = self.scroller.get_allocation()
-        width = alloc.width or self.win.get_allocation().width
-        if width <= 1:
+        alloc = self.win.get_allocation()
+        width = alloc.width
+        height = alloc.height
+        if width <= 1 or height <= 1:
             return
-        target_width = clamp(width // len(self.tiles), MIN_TILE_WIDTH, MAX_TILE_WIDTH, self.tile_width)
+        columns, rows = self.choose_grid_shape(width, height, len(self.tiles))
+        self.relayout_tiles(columns, rows)
+        target_width = clamp(width // columns, MIN_TILE_WIDTH, MAX_TILE_WIDTH, self.tile_width)
+        target_height = clamp(height // rows, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, self.tile_height)
         self.tile_width = target_width
+        self.tile_height = target_height
         for tile in self.tiles:
             tile.set_dimensions(self.tile_width, self.tile_height)
+        self.apply_tile_size_requests()
+
+    def set_hovered_tile(self, tile):
+        next_tile = tile if tile in self.tiles and self.hover_expand and self.hover_scale > 1.0 else None
+        if self.hovered_tile is next_tile:
+            return
+        self.hovered_tile = next_tile
+        self.apply_tile_size_requests()
+
+    def on_panel_enter(self, *_args):
+        self.note_pointer_inside(True)
+        return False
+
+    def on_panel_leave(self, *_args):
+        self.note_pointer_inside(False)
+        return False
+
+    def note_pointer_inside(self, inside):
+        self.pointer_inside_panel = bool(inside)
+        if self.pointer_inside_panel:
+            self.restore_from_idle()
+            return
+        self.schedule_idle_mode()
+
+    def schedule_idle_mode(self):
+        if self.idle_mode == "off":
+            return
+        if self.idle_source_id is not None:
+            GLib.source_remove(self.idle_source_id)
+        self.idle_source_id = GLib.timeout_add(self.idle_delay_ms, self.apply_idle_mode)
+
+    def apply_idle_mode(self):
+        self.idle_source_id = None
+        if self.pointer_inside_panel or self.idle_mode == "off":
+            return False
+        if self.idle_mode == "collapse":
+            self.collapse_for_idle()
+        elif self.idle_mode == "hide":
+            self.hide_for_idle()
+        return False
+
+    def collapse_for_idle(self):
+        if self.collapsed:
+            return
+        self.restore_size = self.win.get_size()
+        for tile in self.tiles:
+            tile.release_layout_size()
+        self.collapsed = True
+        width = max(80, self.restore_size[0]) if self.restore_size else 240
+        self.win.resize(width, 10)
+
+    def hide_for_idle(self):
+        if self.hidden_by_idle:
+            return
+        x, y = self.win.get_position()
+        width, height = self.win.get_size()
+        self.restore_rect = (x, y, max(1, width), max(1, height))
+        self.hidden_by_idle = True
+        self.win.hide()
+        if self.hidden_poll_source_id is None:
+            self.hidden_poll_source_id = GLib.timeout_add(160, self.poll_hidden_restore)
+
+    def poll_hidden_restore(self):
+        if not self.hidden_by_idle:
+            self.hidden_poll_source_id = None
+            return False
+        if self.restore_rect is None:
+            return True
+        pointer = self.get_pointer_position()
+        if pointer is None:
+            return True
+        x, y, width, height = self.restore_rect
+        px, py = pointer
+        if x <= px <= x + width and y <= py <= y + height:
+            self.restore_from_idle()
+            self.hidden_poll_source_id = None
+            return False
+        return True
+
+    def get_pointer_position(self):
+        display = Gdk.Display.get_default()
+        if display is None:
+            return None
+        seat = display.get_default_seat()
+        if seat is None:
+            return None
+        pointer = seat.get_pointer()
+        if pointer is None:
+            return None
+        _screen, x, y = pointer.get_position()
+        return x, y
+
+    def restore_from_idle(self):
+        if self.idle_source_id is not None:
+            GLib.source_remove(self.idle_source_id)
+            self.idle_source_id = None
+        if self.hidden_by_idle:
+            self.hidden_by_idle = False
+            if self.restore_rect is not None:
+                x, y, width, height = self.restore_rect
+                self.win.move(x, y)
+                self.win.resize(width, height)
+            self.win.show_all()
+        if self.collapsed:
+            self.collapsed = False
+            if self.restore_size is not None:
+                self.win.resize(max(1, self.restore_size[0]), max(1, self.restore_size[1]))
+        self.fit_tiles_to_window()
+
+    def apply_tile_size_requests(self):
+        if not self.tiles:
+            return
+        columns = max(1, self.current_columns or len(self.tiles))
+        alloc = self.win.get_allocation()
+        total_width = max(1, alloc.width)
+
+        if self.hovered_tile not in self.tiles or self.hover_scale <= 1.0:
+            for tile in self.tiles:
+                tile.release_layout_size()
+            self.grid.queue_resize()
+            return
+
+        column_weights = [1.0 for _index in range(columns)]
+        hover_index = self.tiles.index(self.hovered_tile)
+        hover_column = hover_index % columns
+        column_weights[hover_column] = self.hover_scale
+        column_widths = self.distribute_pixels(total_width, column_weights)
+
+        for index, tile in enumerate(self.tiles):
+            if index % columns == hover_column:
+                tile.set_layout_size(column_widths[hover_column], SHRINK_TILE_HEIGHT)
+            else:
+                tile.release_layout_size()
+        self.grid.queue_resize()
+
+    def distribute_pixels(self, total, weights):
+        total = max(1, int(total))
+        weight_sum = max(0.001, sum(weights))
+        raw_sizes = [float(total) * (weight / weight_sum) for weight in weights]
+        sizes = [max(1, int(math.floor(size))) for size in raw_sizes]
+        remainder = total - sum(sizes)
+        fractions = sorted(
+            range(len(raw_sizes)),
+            key=lambda index: raw_sizes[index] - math.floor(raw_sizes[index]),
+            reverse=True,
+        )
+        step = 1 if remainder >= 0 else -1
+        for index in fractions:
+            if remainder == 0:
+                break
+            if step < 0 and sizes[index] <= 1:
+                continue
+            sizes[index] += step
+            remainder -= step
+        return sizes
 
     def on_panel_button_press(self, _widget, event):
         if int(event.button) == 3:
