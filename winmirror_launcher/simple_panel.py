@@ -1,4 +1,5 @@
 import gi
+import math
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
@@ -12,19 +13,27 @@ from .window_registry import WindowRegistry
 from .x11 import run_command
 
 
-MIN_TILE_WIDTH = 72
-MAX_TILE_WIDTH = 180
-MIN_TILE_HEIGHT = 48
-MAX_TILE_HEIGHT = 120
+MIN_TILE_WIDTH = 24
+MAX_TILE_WIDTH = 960
+MIN_TILE_HEIGHT = 18
+MAX_TILE_HEIGHT = 640
+SHRINK_TILE_WIDTH = 1
+SHRINK_TILE_HEIGHT = 1
 DEFAULT_TILE_WIDTH = 120
 DEFAULT_TILE_HEIGHT = 72
 WINDOW_REFRESH_MS = 1800
+ACTIVE_WINDOW_POLL_MS = 500
+ORDER_MODES = {"manual", "name", "last-used"}
+LABEL_MODES = {"title", "app"}
+IDLE_MODES = {"off", "collapse", "hide"}
 HOVER_MODES = {
     "off": 1.0,
-    "soft": 1.15,
-    "medium": 1.35,
-    "large": 1.6,
+    "soft": 1.08,
+    "medium": 1.18,
+    "large": 1.32,
 }
+MIN_HOVER_SCALE = 1.0
+MAX_HOVER_SCALE = 2.5
 
 
 def clamp(value, lower, upper, fallback):
@@ -39,10 +48,20 @@ def refresh_interval_ms(fps):
     try:
         fps = float(fps)
     except (TypeError, ValueError):
-        fps = 8.0
+        fps = 1.0
     if fps <= 0:
         return None
     return max(100, int(round(1000.0 / fps)))
+
+
+def interval_seconds_to_ms(seconds):
+    try:
+        seconds = float(seconds)
+    except (TypeError, ValueError):
+        return None
+    if seconds <= 0:
+        return None
+    return max(100, int(round(seconds * 1000.0)))
 
 
 def normalize_hover_mode(mode, hover_expand=False):
@@ -51,19 +70,49 @@ def normalize_hover_mode(mode, hover_expand=False):
     return "medium" if hover_expand else "off"
 
 
+def normalize_hover_scale(value, mode=None, hover_expand=False):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        value = HOVER_MODES[normalize_hover_mode(mode, hover_expand)]
+    return max(MIN_HOVER_SCALE, min(MAX_HOVER_SCALE, value))
+
+
+def normalize_order_mode(value):
+    return value if value in ORDER_MODES else "last-used"
+
+
+def normalize_label_mode(value):
+    return value if value in LABEL_MODES else "title"
+
+
+def normalize_idle_mode(value):
+    return value if value in IDLE_MODES else "off"
+
+
+def app_name_from_wm_class(wm_class):
+    value = (wm_class or "").strip()
+    if not value:
+        return "app"
+    return value.split(".")[-1] or value
+
+
 class SimpleMirrorTile(Gtk.DrawingArea):
     def __init__(
         self,
         window_info,
         width=DEFAULT_TILE_WIDTH,
         height=DEFAULT_TILE_HEIGHT,
-        fps=8.0,
+        fps=1.0,
+        frame_interval_seconds=None,
         show_title=False,
         show_close=False,
         show_workspace=False,
         hover_expand=False,
         hover_mode=None,
+        hover_scale=None,
         show_borders=False,
+        label_mode="title",
         panel=None,
     ):
         super().__init__()
