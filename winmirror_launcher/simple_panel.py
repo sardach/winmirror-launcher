@@ -514,14 +514,21 @@ class SimpleLauncherPanel:
         windows,
         tile_width=DEFAULT_TILE_WIDTH,
         tile_height=DEFAULT_TILE_HEIGHT,
-        fps=8.0,
+        fps=1.0,
         title=None,
         show_title=False,
         show_close=False,
         show_workspace=False,
         hover_expand=False,
         hover_mode=None,
+        hover_scale=None,
         show_borders=False,
+        order_mode="last-used",
+        label_mode="title",
+        sticky_workspaces=False,
+        idle_mode="off",
+        idle_delay_ms=700,
+        frame_interval_seconds=None,
         excluded_window_ids=None,
         registry=None,
     ):
@@ -537,8 +544,28 @@ class SimpleLauncherPanel:
         self.show_workspace = bool(show_workspace)
         self.hover_mode = normalize_hover_mode(hover_mode, hover_expand)
         self.hover_expand = self.hover_mode != "off"
+        self.hover_scale = normalize_hover_scale(hover_scale, self.hover_mode, hover_expand)
         self.show_borders = bool(show_borders)
+        self.label_mode = normalize_label_mode(label_mode)
+        self.sticky_workspaces = bool(sticky_workspaces)
+        self.idle_mode = normalize_idle_mode(idle_mode)
+        self.idle_delay_ms = clamp(idle_delay_ms, 100, 5000, 700)
+        self.frame_interval_seconds = frame_interval_seconds
         self.window_refresh_source_id = None
+        self.active_window_source_id = None
+        self.idle_source_id = None
+        self.hidden_poll_source_id = None
+        self.current_columns = 0
+        self.current_rows = 0
+        self.order_edit_mode = False
+        self.order_mode = normalize_order_mode(order_mode)
+        self.mru_window_ids = []
+        self.hovered_tile = None
+        self.pointer_inside_panel = False
+        self.collapsed = False
+        self.hidden_by_idle = False
+        self.restore_size = None
+        self.restore_rect = None
 
         self.win = Gtk.Window()
         self.win.set_title(title or "winmirror-launcher")
@@ -547,27 +574,27 @@ class SimpleLauncherPanel:
         self.win.set_resizable(True)
         self.win.set_decorated(True)
         self.win.connect("configure-event", self.on_configure_event)
-        self.win.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+        self.win.add_events(
+            Gdk.EventMask.BUTTON_PRESS_MASK
+            | Gdk.EventMask.ENTER_NOTIFY_MASK
+            | Gdk.EventMask.LEAVE_NOTIFY_MASK
+        )
         self.win.connect("button-press-event", self.on_panel_button_press)
+        self.win.connect("enter-notify-event", self.on_panel_enter)
+        self.win.connect("leave-notify-event", self.on_panel_leave)
 
-        screen = Gdk.Screen.get_default()
-        screen_width = screen.get_width() if screen is not None else 1200
-        target_width = min(max(self.tile_width, len(windows) * self.tile_width), max(360, screen_width - 80))
-        target_height = self.tile_height
+        target_width = max(240, min(len(windows) * self.tile_width, 980))
+        target_height = max(48, self.tile_height)
         self.win.set_default_size(target_width, target_height)
 
-        scroller = Gtk.ScrolledWindow()
-        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-        scroller.set_shadow_type(Gtk.ShadowType.NONE)
-        self.win.add(scroller)
-
-        self.scroller = scroller
-        self.strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
-        self.strip.set_margin_top(0)
-        self.strip.set_margin_bottom(0)
-        self.strip.set_margin_start(0)
-        self.strip.set_margin_end(0)
-        scroller.add(self.strip)
+        self.grid = Gtk.Grid()
+        self.grid.set_row_spacing(0)
+        self.grid.set_column_spacing(0)
+        self.grid.set_hexpand(True)
+        self.grid.set_vexpand(True)
+        self.grid.set_row_homogeneous(False)
+        self.grid.set_column_homogeneous(False)
+        self.win.add(self.grid)
 
         self.tiles = []
         for info in self.filter_windows(windows):
@@ -575,8 +602,12 @@ class SimpleLauncherPanel:
 
         self.win.show_all()
         self.capture_own_window_id()
-        self.fit_tiles_to_current_width()
+        self.apply_workspace_behavior()
+        self.note_window_used(self.registry.get_active_window_id(), apply_order=False)
+        self.apply_order()
+        self.fit_tiles_to_window()
         self.window_refresh_source_id = GLib.timeout_add(WINDOW_REFRESH_MS, self.reconcile_windows)
+        self.active_window_source_id = GLib.timeout_add(ACTIVE_WINDOW_POLL_MS, self.poll_active_window)
 
     def capture_own_window_id(self):
         gdk_window = self.win.get_window()
@@ -586,6 +617,11 @@ class SimpleLauncherPanel:
             self.own_window_id = int(gdk_window.get_xid())
         except AttributeError:
             self.own_window_id = None
+
+    def apply_workspace_behavior(self):
+        if not self.sticky_workspaces or self.own_window_id is None:
+            return
+        run_command(["wmctrl", "-i", "-r", f"0x{self.own_window_id:x}", "-b", "add,sticky"])
 
     def filter_windows(self, windows):
         filtered = []
@@ -603,22 +639,34 @@ class SimpleLauncherPanel:
             width=self.tile_width,
             height=self.tile_height,
             fps=self.fps,
+            frame_interval_seconds=self.frame_interval_seconds,
             show_title=self.show_title,
             show_close=self.show_close,
             show_workspace=self.show_workspace,
             hover_mode=self.hover_mode,
+            hover_scale=self.hover_scale,
             show_borders=self.show_borders,
+            label_mode=self.label_mode,
             panel=self,
         )
-        self.strip.pack_start(tile, False, False, 0)
         self.tiles.append(tile)
+        self.grid.attach(tile, len(self.tiles) - 1, 0, 1, 1)
+        self.current_columns = 0
+        self.current_rows = 0
         tile.show_all()
         return tile
+
+    def tile_ids(self):
+        return [tile.window_info.window_id for tile in self.tiles]
 
     def remove_tile(self, tile):
         if tile in self.tiles:
             self.tiles.remove(tile)
-        self.strip.remove(tile)
+        self.grid.remove(tile)
+        self.current_columns = 0
+        self.current_rows = 0
+        if self.hovered_tile is tile:
+            self.hovered_tile = None
         tile.destroy()
 
     def reconcile_windows(self):
