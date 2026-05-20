@@ -1,13 +1,16 @@
 import gi
 import math
+import os
+import subprocess
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("GdkX11", "3.0")
 gi.require_version("Pango", "1.0")
 gi.require_version("PangoCairo", "1.0")
+gi.require_version("Vte", "2.91")
 
-from gi.repository import Gdk, GdkX11, GLib, Gtk, Pango, PangoCairo
+from gi.repository import Gdk, GdkX11, GLib, Gtk, Pango, PangoCairo, Vte
 
 from .window_registry import WindowRegistry
 from .x11 import run_command
@@ -26,6 +29,7 @@ ACTIVE_WINDOW_POLL_MS = 500
 ORDER_MODES = {"manual", "name", "last-used"}
 LABEL_MODES = {"title", "app"}
 IDLE_MODES = {"off", "collapse", "hide"}
+CLOCK_MODES = {"time", "time-seconds", "date-time", "full"}
 HOVER_MODES = {
     "off": 1.0,
     "soft": 1.08,
@@ -90,11 +94,167 @@ def normalize_idle_mode(value):
     return value if value in IDLE_MODES else "off"
 
 
+def normalize_clock_mode(value):
+    return value if value in CLOCK_MODES else "date-time"
+
+
 def app_name_from_wm_class(wm_class):
     value = (wm_class or "").strip()
     if not value:
         return "app"
     return value.split(".")[-1] or value
+
+
+class LooseFixed(Gtk.Fixed):
+    __gtype_name__ = "WinmirrorLooseFixed"
+
+    def do_get_preferred_width(self):
+        return 1, 1
+
+    def do_get_preferred_height(self):
+        return 1, 1
+
+    def do_get_preferred_width_for_height(self, _height):
+        return 1, 1
+
+    def do_get_preferred_height_for_width(self, _width):
+        return 1, 1
+
+
+class ClockSlot(Gtk.DrawingArea):
+    def __init__(self, mode="date-time"):
+        super().__init__()
+        self.mode = normalize_clock_mode(mode)
+        self.set_size_request(DEFAULT_TILE_WIDTH, DEFAULT_TILE_HEIGHT)
+        self.connect("draw", self.on_draw)
+
+    def set_mode(self, mode):
+        self.mode = normalize_clock_mode(mode)
+        self.queue_draw()
+
+    def format_lines(self):
+        now = GLib.DateTime.new_now_local()
+        if self.mode == "time":
+            return [now.format("%H:%M")]
+        if self.mode == "time-seconds":
+            return [now.format("%H:%M:%S")]
+        if self.mode == "full":
+            return [now.format("%A"), now.format("%d/%m/%Y"), now.format("%H:%M:%S")]
+        return [now.format("%d/%m/%Y"), now.format("%H:%M")]
+
+    def on_draw(self, widget, cr):
+        alloc = widget.get_allocation()
+        width = max(1, alloc.width)
+        height = max(1, alloc.height)
+        cr.set_source_rgb(0.03, 0.035, 0.04)
+        cr.rectangle(0, 0, width, height)
+        cr.fill()
+        cr.set_source_rgb(0.18, 0.18, 0.18)
+        cr.set_line_width(1.0)
+        cr.rectangle(0.5, 0.5, max(0, width - 1), max(0, height - 1))
+        cr.stroke()
+
+        lines = self.format_lines()
+        font = "Sans Bold 12" if len(lines) == 1 else "Sans Bold 9"
+        layouts = []
+        total_height = 0
+        for line in lines:
+            layout = widget.create_pango_layout(line)
+            layout.set_font_description(Pango.FontDescription(font))
+            layout.set_ellipsize(Pango.EllipsizeMode.END)
+            layout.set_width(max(1, width - 10) * Pango.SCALE)
+            _tw, th = layout.get_pixel_size()
+            layouts.append((layout, th))
+            total_height += th
+        total_height += max(0, len(lines) - 1) * 2
+        y = max(2, (height - total_height) / 2.0)
+        cr.set_source_rgb(0.9, 0.92, 0.94)
+        for layout, th in layouts:
+            tw, _th = layout.get_pixel_size()
+            cr.move_to(max(5, (width - tw) / 2.0), y)
+            PangoCairo.show_layout(cr, layout)
+            y += th + 2
+        return False
+
+
+class MiniTerminalSlot(Gtk.Box):
+    def __init__(self, shell=None):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.shell = shell or os.environ.get("SHELL") or "/bin/sh"
+        self.set_size_request(DEFAULT_TILE_WIDTH, DEFAULT_TILE_HEIGHT)
+        self.terminal = Vte.Terminal()
+        self.terminal.set_scrollback_lines(300)
+        self.terminal.set_size(24, 6)
+        self.pack_start(self.terminal, True, True, 0)
+        self.spawn_shell()
+
+    def spawn_shell(self):
+        argv = [self.shell]
+        try:
+            self.terminal.spawn_async(
+                Vte.PtyFlags.DEFAULT,
+                os.path.expanduser("~"),
+                argv,
+                None,
+                GLib.SpawnFlags.DEFAULT,
+                None,
+                None,
+                -1,
+                None,
+                None,
+                None,
+            )
+        except TypeError:
+            self.terminal.spawn_async(
+                Vte.PtyFlags.DEFAULT,
+                os.path.expanduser("~"),
+                argv,
+                None,
+                GLib.SpawnFlags.DEFAULT,
+                None,
+                -1,
+                None,
+                None,
+                None,
+            )
+
+
+class CommandRunnerSlot(Gtk.Box):
+    def __init__(self):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.set_size_request(DEFAULT_TILE_WIDTH, DEFAULT_TILE_HEIGHT)
+        self.set_border_width(2)
+        self.set_halign(Gtk.Align.FILL)
+        self.set_valign(Gtk.Align.FILL)
+
+        self.entry = Gtk.Entry()
+        self.entry.set_placeholder_text("Ejecutar")
+        self.entry.set_width_chars(1)
+        self.entry.set_max_width_chars(16)
+        self.entry.set_hexpand(True)
+        self.entry.set_size_request(1, 24)
+        self.entry.connect("activate", self.on_activate)
+        self.pack_start(self.entry, True, False, 0)
+
+        self.status = Gtk.Label(label="")
+        self.status.set_no_show_all(True)
+
+    def on_activate(self, entry):
+        command = (entry.get_text() or "").strip()
+        if not command:
+            return True
+        try:
+            subprocess.Popen(
+                ["/bin/sh", "-lc", command],
+                cwd=os.path.expanduser("~"),
+                start_new_session=True,
+            )
+        except OSError as exc:
+            self.status.set_text(str(exc))
+            return True
+        self.status.set_text(command)
+        entry.set_text("")
+        return True
 
 
 class SimpleMirrorTile(Gtk.DrawingArea):
@@ -266,7 +426,8 @@ class SimpleMirrorTile(Gtk.DrawingArea):
             return True
 
         if not self.is_viewable():
-            self.current_pixbuf = None
+            if self.status == "cerrada":
+                self.current_pixbuf = None
             self.queue_draw()
             return True
 
@@ -274,7 +435,6 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         height = max(1, self.source_window.get_height())
         if width <= 1 or height <= 1:
             self.status = "sin imagen"
-            self.current_pixbuf = None
             self.queue_draw()
             return True
 
@@ -284,13 +444,11 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         error = Gdk.error_trap_pop()
         if error:
             self.status = "sin imagen"
-            self.current_pixbuf = None
             self.source_window = None
             self.queue_draw()
             return True
         if pixbuf is None:
             self.status = "sin imagen"
-            self.current_pixbuf = None
         else:
             self.status = ""
             self.current_pixbuf = pixbuf
@@ -530,6 +688,9 @@ class SimpleLauncherPanel:
         idle_delay_ms=700,
         frame_interval_seconds=None,
         excluded_window_ids=None,
+        selected_window_ids=None,
+        show_clock=False,
+        clock_mode="date-time",
         registry=None,
     ):
         self.registry = registry or WindowRegistry()
@@ -551,6 +712,10 @@ class SimpleLauncherPanel:
         self.idle_mode = normalize_idle_mode(idle_mode)
         self.idle_delay_ms = clamp(idle_delay_ms, 100, 5000, 700)
         self.frame_interval_seconds = frame_interval_seconds
+        self.selected_window_ids = None if selected_window_ids is None else {int(item) for item in selected_window_ids}
+        self.show_clock = bool(show_clock)
+        self.clock_mode = normalize_clock_mode(clock_mode)
+        self.clock_source_id = None
         self.window_refresh_source_id = None
         self.active_window_source_id = None
         self.idle_source_id = None
@@ -560,7 +725,9 @@ class SimpleLauncherPanel:
         self.order_edit_mode = False
         self.order_mode = normalize_order_mode(order_mode)
         self.mru_window_ids = []
+        self.active_window_id = self.registry.get_active_window_id()
         self.hovered_tile = None
+        self.filter_query = ""
         self.pointer_inside_panel = False
         self.collapsed = False
         self.hidden_by_idle = False
@@ -587,25 +754,38 @@ class SimpleLauncherPanel:
         target_height = max(48, self.tile_height)
         self.win.set_default_size(target_width, target_height)
 
-        self.grid = Gtk.Grid()
-        self.grid.set_row_spacing(0)
-        self.grid.set_column_spacing(0)
+        self.grid = LooseFixed()
         self.grid.set_hexpand(True)
         self.grid.set_vexpand(True)
-        self.grid.set_row_homogeneous(False)
-        self.grid.set_column_homogeneous(False)
         self.win.add(self.grid)
+
+        self.filter_entry = Gtk.SearchEntry()
+        self.filter_entry.set_placeholder_text("Filtrar")
+        self.filter_entry.set_width_chars(8)
+        self.filter_entry.set_hexpand(False)
+        self.filter_entry.connect("changed", self.on_filter_changed)
+        self.filter_entry.connect("key-press-event", self.on_filter_key_press)
+
+        self.clock_slot = ClockSlot(self.clock_mode)
+        self.clock_slot.set_visible(self.show_clock)
+        self.terminal_slots = []
+        self.executor_slots = []
 
         self.tiles = []
         for info in self.filter_windows(windows):
             self.add_tile(info)
+        self.grid.put(self.clock_slot, 0, 0)
+        self.grid.put(self.filter_entry, 0, 0)
 
         self.win.show_all()
+        self.clock_slot.set_visible(self.show_clock)
         self.capture_own_window_id()
         self.apply_workspace_behavior()
-        self.note_window_used(self.registry.get_active_window_id(), apply_order=False)
+        self.note_window_used(self.active_window_id, apply_order=False)
         self.apply_order()
         self.fit_tiles_to_window()
+        GLib.idle_add(self.fit_tiles_to_window)
+        self.update_clock_timer()
         self.window_refresh_source_id = GLib.timeout_add(WINDOW_REFRESH_MS, self.reconcile_windows)
         self.active_window_source_id = GLib.timeout_add(ACTIVE_WINDOW_POLL_MS, self.poll_active_window)
 
@@ -633,6 +813,78 @@ class SimpleLauncherPanel:
             filtered.append(info)
         return filtered
 
+    def visible_tiles(self):
+        return [tile for tile in self.tiles if self.tile_matches_selection(tile) and self.tile_matches_filter(tile)]
+
+    def utility_slots(self):
+        slots = []
+        slots.extend(self.terminal_slots)
+        slots.extend(self.executor_slots)
+        if self.show_clock:
+            slots.append(self.clock_slot)
+        return slots
+
+    def layout_slot_count(self):
+        return len(self.visible_tiles()) + len(self.utility_slots()) + 1
+
+    def tile_matches_selection(self, tile):
+        if self.selected_window_ids is None:
+            return True
+        return int(tile.window_info.window_id) in self.selected_window_ids
+
+    def tile_matches_filter(self, tile):
+        query = self.filter_query.strip().casefold()
+        if not query:
+            return True
+        info = tile.window_info
+        haystack = " ".join(
+            str(part or "")
+            for part in (
+                info.title,
+                info.wm_class,
+                app_name_from_wm_class(info.wm_class),
+                info.window_hex,
+                info.window_id,
+            )
+        ).casefold()
+        return all(token in haystack for token in query.split())
+
+    def on_filter_changed(self, entry):
+        self.filter_query = entry.get_text() or ""
+        self.hovered_tile = None
+        self.current_columns = 0
+        self.current_rows = 0
+        self.fit_tiles_to_window()
+
+    def on_filter_key_press(self, entry, event):
+        key = Gdk.keyval_name(event.keyval)
+        if key == "Escape" and entry.get_text():
+            entry.set_text("")
+            return True
+        return False
+
+    def position_widget_slot(self, widget, index, columns, column_offsets=None, column_widths=None):
+        index = max(0, int(index))
+        columns = max(1, int(columns or self.current_columns or self.layout_slot_count()))
+        column = index % columns
+        row = index // columns
+        if column_offsets is not None and column_widths is not None:
+            x = column_offsets[column]
+            width = column_widths[column]
+        else:
+            x = column * self.tile_width
+            width = self.tile_width
+        widget.set_size_request(max(1, int(width)), max(1, int(self.tile_height)))
+        self.grid.move(widget, int(x), int(row * self.tile_height))
+        widget.queue_resize()
+        self.grid.queue_resize()
+        self.grid.check_resize()
+
+    def position_filter_entry(self, index=None, columns=None, column_offsets=None, column_widths=None):
+        index = self.layout_slot_count() - 1 if index is None else index
+        columns = max(1, int(columns or self.current_columns or self.layout_slot_count()))
+        self.position_widget_slot(self.filter_entry, index, columns, column_offsets, column_widths)
+
     def add_tile(self, info):
         tile = SimpleMirrorTile(
             info,
@@ -650,10 +902,11 @@ class SimpleLauncherPanel:
             panel=self,
         )
         self.tiles.append(tile)
-        self.grid.attach(tile, len(self.tiles) - 1, 0, 1, 1)
+        self.grid.put(tile, 0, 0)
         self.current_columns = 0
         self.current_rows = 0
         tile.show_all()
+        tile.set_visible(self.tile_matches_selection(tile) and self.tile_matches_filter(tile))
         return tile
 
     def tile_ids(self):
@@ -676,6 +929,7 @@ class SimpleLauncherPanel:
             return True
 
         before_ids = [tile.window_info.window_id for tile in self.tiles]
+        before_visible_ids = [tile.window_info.window_id for tile in self.visible_tiles()]
         next_by_id = {info.window_id: info for info in windows}
         existing_by_id = {tile.window_info.window_id: tile for tile in self.tiles}
 
@@ -693,12 +947,21 @@ class SimpleLauncherPanel:
 
         self.apply_order()
         after_ids = [tile.window_info.window_id for tile in self.tiles]
-        if before_ids != after_ids:
+        after_visible_ids = [tile.window_info.window_id for tile in self.visible_tiles()]
+        if before_ids != after_ids or before_visible_ids != after_visible_ids:
             self.fit_tiles_to_window()
         return True
 
     def poll_active_window(self):
-        self.note_window_used(self.registry.get_active_window_id())
+        active_window_id = self.registry.get_active_window_id()
+        before_visible_ids = [tile.window_info.window_id for tile in self.visible_tiles()]
+        self.active_window_id = active_window_id
+        self.note_window_used(active_window_id)
+        after_visible_ids = [tile.window_info.window_id for tile in self.visible_tiles()]
+        if before_visible_ids != after_visible_ids:
+            self.current_columns = 0
+            self.current_rows = 0
+            self.fit_tiles_to_window()
         return True
 
     def note_window_used(self, window_id, apply_order=True):
@@ -763,36 +1026,55 @@ class SimpleLauncherPanel:
     def relayout_tiles(self, columns, rows):
         columns = max(1, int(columns))
         rows = max(1, int(rows))
-        if columns == self.current_columns and rows == self.current_rows:
-            return
         self.current_columns = columns
         self.current_rows = rows
+        visible_tiles = self.visible_tiles()
+        utility_slots = self.utility_slots()
+        for index, tile in enumerate(visible_tiles):
+            if tile.get_parent() is None:
+                self.grid.put(tile, 0, 0)
+            tile.set_layout_size(self.tile_width, self.tile_height)
+            self.grid.move(
+                tile,
+                (index % columns) * self.tile_width,
+                (index // columns) * self.tile_height,
+            )
+            tile.show()
         for tile in self.tiles:
-            self.grid.remove(tile)
-        for index, tile in enumerate(self.tiles):
-            self.grid.attach(tile, index % columns, index // columns, 1, 1)
-        self.grid.show_all()
+            tile.set_visible(tile in visible_tiles)
+        for offset, slot in enumerate(utility_slots):
+            slot.set_visible(True)
+            self.position_widget_slot(slot, len(visible_tiles) + offset, columns)
+        self.clock_slot.set_visible(self.show_clock)
+        self.position_filter_entry(len(visible_tiles) + len(utility_slots), columns)
+        self.grid.queue_resize()
+        self.win.queue_resize()
 
     def fit_tiles_to_window(self):
-        if not self.tiles:
-            return
-        alloc = self.win.get_allocation()
+        visible_tiles = self.visible_tiles()
+        if not visible_tiles:
+            for tile in self.tiles:
+                tile.set_visible(False)
+        alloc = self.grid.get_allocation()
+        if alloc.width <= 1 or alloc.height <= 1:
+            alloc = self.win.get_allocation()
         width = alloc.width
         height = alloc.height
         if width <= 1 or height <= 1:
             return
-        columns, rows = self.choose_grid_shape(width, height, len(self.tiles))
-        self.relayout_tiles(columns, rows)
+        slot_count = self.layout_slot_count()
+        columns, rows = self.choose_grid_shape(width, height, slot_count)
         target_width = clamp(width // columns, MIN_TILE_WIDTH, MAX_TILE_WIDTH, self.tile_width)
         target_height = clamp(height // rows, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, self.tile_height)
         self.tile_width = target_width
         self.tile_height = target_height
-        for tile in self.tiles:
+        for tile in visible_tiles:
             tile.set_dimensions(self.tile_width, self.tile_height)
+        self.relayout_tiles(columns, rows)
         self.apply_tile_size_requests()
 
     def set_hovered_tile(self, tile):
-        next_tile = tile if tile in self.tiles and self.hover_expand and self.hover_scale > 1.0 else None
+        next_tile = tile if tile in self.visible_tiles() and self.hover_expand and self.hover_scale > 1.0 else None
         if self.hovered_tile is next_tile:
             return
         self.hovered_tile = next_tile
@@ -899,29 +1181,48 @@ class SimpleLauncherPanel:
         self.fit_tiles_to_window()
 
     def apply_tile_size_requests(self):
-        if not self.tiles:
-            return
-        columns = max(1, self.current_columns or len(self.tiles))
-        alloc = self.win.get_allocation()
+        visible_tiles = self.visible_tiles()
+        utility_slots = self.utility_slots()
+        slot_count = len(visible_tiles) + len(utility_slots) + 1
+        columns = max(1, self.current_columns or slot_count)
+        rows = max(1, self.current_rows or math.ceil(slot_count / columns))
+        alloc = self.grid.get_allocation()
+        if alloc.width <= 1:
+            alloc = self.win.get_allocation()
         total_width = max(1, alloc.width)
 
-        if self.hovered_tile not in self.tiles or self.hover_scale <= 1.0:
-            for tile in self.tiles:
-                tile.release_layout_size()
+        if self.hovered_tile not in visible_tiles or self.hover_scale <= 1.0:
+            for index, tile in enumerate(visible_tiles):
+                tile.set_layout_size(self.tile_width, self.tile_height)
+                self.grid.move(
+                    tile,
+                    (index % columns) * self.tile_width,
+                    (index // columns) * self.tile_height,
+                )
+            for offset, slot in enumerate(utility_slots):
+                self.position_widget_slot(slot, len(visible_tiles) + offset, columns)
+            self.clock_slot.set_visible(self.show_clock)
+            self.position_filter_entry(len(visible_tiles) + len(utility_slots), columns)
             self.grid.queue_resize()
             return
 
         column_weights = [1.0 for _index in range(columns)]
-        hover_index = self.tiles.index(self.hovered_tile)
+        hover_index = visible_tiles.index(self.hovered_tile)
         hover_column = hover_index % columns
         column_weights[hover_column] = self.hover_scale
         column_widths = self.distribute_pixels(total_width, column_weights)
+        column_offsets = [0]
+        for width in column_widths[:-1]:
+            column_offsets.append(column_offsets[-1] + width)
 
-        for index, tile in enumerate(self.tiles):
-            if index % columns == hover_column:
-                tile.set_layout_size(column_widths[hover_column], SHRINK_TILE_HEIGHT)
-            else:
-                tile.release_layout_size()
+        for index, tile in enumerate(visible_tiles):
+            column = index % columns
+            tile.set_layout_size(column_widths[column], self.tile_height)
+            self.grid.move(tile, column_offsets[column], (index // columns) * self.tile_height)
+        for offset, slot in enumerate(utility_slots):
+            self.position_widget_slot(slot, len(visible_tiles) + offset, columns, column_offsets, column_widths)
+        self.clock_slot.set_visible(self.show_clock)
+        self.position_filter_entry(len(visible_tiles) + len(utility_slots), columns, column_offsets, column_widths)
         self.grid.queue_resize()
 
     def distribute_pixels(self, total, weights):
@@ -945,9 +1246,38 @@ class SimpleLauncherPanel:
             remainder -= step
         return sizes
 
+    def event_position_in_panel(self, event):
+        gdk_window = self.win.get_window()
+        if gdk_window is None:
+            return event.x, event.y
+        origin = gdk_window.get_origin()
+        origin_x, origin_y = origin[-2], origin[-1]
+        return event.x_root - origin_x, event.y_root - origin_y
+
+    def widget_contains_panel_point(self, widget, x, y):
+        translated = widget.translate_coordinates(self.win, 0, 0)
+        if translated is None:
+            return False
+        widget_x, widget_y = translated
+        alloc = widget.get_allocation()
+        return widget_x <= x < widget_x + alloc.width and widget_y <= y < widget_y + alloc.height
+
+    def tile_at_panel_point(self, x, y):
+        for tile in self.visible_tiles():
+            if self.widget_contains_panel_point(tile, x, y):
+                return tile
+        return None
+
     def on_panel_button_press(self, _widget, event):
+        x, y = self.event_position_in_panel(event)
+        if self.widget_contains_panel_point(self.filter_entry, x, y):
+            return False
+        tile = self.tile_at_panel_point(x, y)
         if int(event.button) == 3:
-            self.show_context_menu(event, None)
+            self.show_context_menu(event, tile)
+            return True
+        if int(event.button) == 1 and tile is not None:
+            tile.activate_window()
             return True
         return False
 
@@ -958,7 +1288,59 @@ class SimpleLauncherPanel:
         self.add_check_item(menu, "Mostrar cerrar", self.show_close, lambda active: self.update_options(show_close=active))
         self.add_check_item(menu, "Mostrar workspace", self.show_workspace, lambda active: self.update_options(show_workspace=active))
         self.add_check_item(menu, "Mostrar bordes", self.show_borders, lambda active: self.update_options(show_borders=active))
+        selector_item = Gtk.MenuItem(label="Seleccionar ventanas...")
+        selector_item.connect("activate", lambda *_args: self.show_window_selector())
+        menu.append(selector_item)
         self.add_check_item(menu, "Editar orden", self.order_edit_mode, self.set_order_edit_mode)
+        menu.append(Gtk.SeparatorMenuItem())
+
+        clock_menu = Gtk.Menu()
+        self.add_check_item(clock_menu, "Mostrar hora/fecha", self.show_clock, self.set_show_clock)
+        clock_menu.append(Gtk.SeparatorMenuItem())
+        clock_group = None
+        for label, mode in (("Hora", "time"), ("Hora con segundos", "time-seconds"), ("Fecha y hora", "date-time"), ("Completo", "full")):
+            item = Gtk.RadioMenuItem.new_with_label_from_widget(clock_group, label)
+            if clock_group is None:
+                clock_group = item
+            item.set_active(self.clock_mode == mode)
+            item.connect("toggled", lambda check, value=mode: check.get_active() and self.set_clock_mode(value))
+            clock_menu.append(item)
+        clock_item = Gtk.MenuItem(label="Hora y fecha")
+        clock_item.set_submenu(clock_menu)
+        menu.append(clock_item)
+
+        terminal_menu = Gtk.Menu()
+        add_terminal_item = Gtk.MenuItem(label="Agregar mini terminal")
+        add_terminal_item.connect("activate", lambda *_args: self.add_terminal_slot())
+        terminal_menu.append(add_terminal_item)
+        remove_terminal_item = Gtk.MenuItem(label="Quitar ultima")
+        remove_terminal_item.set_sensitive(bool(self.terminal_slots))
+        remove_terminal_item.connect("activate", lambda *_args: self.remove_terminal_slot())
+        terminal_menu.append(remove_terminal_item)
+        remove_all_terminal_item = Gtk.MenuItem(label="Quitar todas")
+        remove_all_terminal_item.set_sensitive(bool(self.terminal_slots))
+        remove_all_terminal_item.connect("activate", lambda *_args: self.clear_terminal_slots())
+        terminal_menu.append(remove_all_terminal_item)
+        terminal_item = Gtk.MenuItem(label=f"Mini terminales ({len(self.terminal_slots)})")
+        terminal_item.set_submenu(terminal_menu)
+        menu.append(terminal_item)
+
+        executor_menu = Gtk.Menu()
+        add_executor_item = Gtk.MenuItem(label="Agregar ejecutor")
+        add_executor_item.connect("activate", lambda *_args: self.add_executor_slot())
+        executor_menu.append(add_executor_item)
+        remove_executor_item = Gtk.MenuItem(label="Quitar ultimo")
+        remove_executor_item.set_sensitive(bool(self.executor_slots))
+        remove_executor_item.connect("activate", lambda *_args: self.remove_executor_slot())
+        executor_menu.append(remove_executor_item)
+        remove_all_executor_item = Gtk.MenuItem(label="Quitar todos")
+        remove_all_executor_item.set_sensitive(bool(self.executor_slots))
+        remove_all_executor_item.connect("activate", lambda *_args: self.clear_executor_slots())
+        executor_menu.append(remove_all_executor_item)
+        executor_item = Gtk.MenuItem(label=f"Ejecutores ({len(self.executor_slots)})")
+        executor_item.set_submenu(executor_menu)
+        menu.append(executor_item)
+
         menu.append(Gtk.SeparatorMenuItem())
 
         order_menu = Gtk.Menu()
@@ -1110,6 +1492,155 @@ class SimpleLauncherPanel:
         elif not self.pointer_inside_panel:
             self.schedule_idle_mode()
 
+    def set_show_clock(self, active):
+        self.show_clock = bool(active)
+        self.clock_slot.set_visible(self.show_clock)
+        self.update_clock_timer()
+        self.current_columns = 0
+        self.current_rows = 0
+        self.fit_tiles_to_window()
+
+    def set_clock_mode(self, mode):
+        self.clock_mode = normalize_clock_mode(mode)
+        self.clock_slot.set_mode(self.clock_mode)
+        self.update_clock_timer()
+
+    def update_clock_timer(self):
+        if self.clock_source_id is not None:
+            GLib.source_remove(self.clock_source_id)
+            self.clock_source_id = None
+        if not self.show_clock:
+            return
+        interval = 1000 if self.clock_mode in {"time-seconds", "full"} else 30000
+        self.clock_source_id = GLib.timeout_add(interval, self.refresh_clock)
+
+    def refresh_clock(self):
+        self.clock_slot.queue_draw()
+        return self.show_clock
+
+    def add_terminal_slot(self):
+        slot = MiniTerminalSlot()
+        self.terminal_slots.append(slot)
+        self.grid.put(slot, 0, 0)
+        slot.show_all()
+        self.current_columns = 0
+        self.current_rows = 0
+        self.fit_tiles_to_window()
+
+    def remove_terminal_slot(self):
+        if not self.terminal_slots:
+            return
+        slot = self.terminal_slots.pop()
+        self.grid.remove(slot)
+        slot.destroy()
+        self.current_columns = 0
+        self.current_rows = 0
+        self.fit_tiles_to_window()
+
+    def clear_terminal_slots(self):
+        while self.terminal_slots:
+            slot = self.terminal_slots.pop()
+            self.grid.remove(slot)
+            slot.destroy()
+        self.current_columns = 0
+        self.current_rows = 0
+        self.fit_tiles_to_window()
+
+    def add_executor_slot(self):
+        slot = CommandRunnerSlot()
+        self.executor_slots.append(slot)
+        self.grid.put(slot, 0, 0)
+        slot.show_all()
+        self.current_columns = 0
+        self.current_rows = 0
+        self.fit_tiles_to_window()
+
+    def remove_executor_slot(self):
+        if not self.executor_slots:
+            return
+        slot = self.executor_slots.pop()
+        self.grid.remove(slot)
+        slot.destroy()
+        self.current_columns = 0
+        self.current_rows = 0
+        self.fit_tiles_to_window()
+
+    def clear_executor_slots(self):
+        while self.executor_slots:
+            slot = self.executor_slots.pop()
+            self.grid.remove(slot)
+            slot.destroy()
+        self.current_columns = 0
+        self.current_rows = 0
+        self.fit_tiles_to_window()
+
+    def set_selected_window_ids(self, window_ids):
+        selected = {int(window_id) for window_id in window_ids}
+        current_ids = {int(tile.window_info.window_id) for tile in self.tiles}
+        self.selected_window_ids = None if selected == current_ids else selected
+        self.hovered_tile = None
+        self.current_columns = 0
+        self.current_rows = 0
+        self.fit_tiles_to_window()
+
+    def show_window_selector(self):
+        self.reconcile_windows()
+        dialog = Gtk.Dialog(title="Seleccionar ventanas", transient_for=self.win, modal=True)
+        dialog.add_button("Cancelar", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Aplicar", Gtk.ResponseType.OK)
+        dialog.set_default_size(520, 420)
+
+        content = dialog.get_content_area()
+        summary = Gtk.Label(label=f"Ventanas detectadas: {len(self.tiles)}")
+        summary.set_xalign(0.0)
+        summary.set_margin_start(10)
+        summary.set_margin_end(10)
+        summary.set_margin_top(10)
+        summary.set_margin_bottom(6)
+        content.pack_start(summary, False, False, 0)
+
+        button_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        button_row.set_margin_start(10)
+        button_row.set_margin_end(10)
+        button_row.set_margin_bottom(8)
+        select_all_button = Gtk.Button(label="Todas")
+        select_none_button = Gtk.Button(label="Ninguna")
+        button_row.pack_start(select_all_button, False, False, 0)
+        button_row.pack_start(select_none_button, False, False, 0)
+        content.pack_start(button_row, False, False, 0)
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_vexpand(True)
+        scroller.set_margin_start(10)
+        scroller.set_margin_end(10)
+        scroller.set_margin_bottom(10)
+        list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        scroller.add(list_box)
+        content.pack_start(scroller, True, True, 0)
+
+        checks = []
+        selected = self.selected_window_ids
+        for tile in sorted(self.tiles, key=self.window_sort_key):
+            info = tile.window_info
+            label = f"{app_name_from_wm_class(info.wm_class)} - {info.title or info.window_hex}"
+            check = Gtk.CheckButton(label=label)
+            check.set_tooltip_text(f"{info.window_hex}  {info.wm_class}")
+            check.set_active(selected is None or int(info.window_id) in selected)
+            check.set_margin_start(4)
+            check.set_margin_end(4)
+            list_box.pack_start(check, False, False, 0)
+            checks.append((check, int(info.window_id)))
+
+        select_all_button.connect("clicked", lambda *_args: [check.set_active(True) for check, _window_id in checks])
+        select_none_button.connect("clicked", lambda *_args: [check.set_active(False) for check, _window_id in checks])
+
+        dialog.show_all()
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            self.set_selected_window_ids(window_id for check, window_id in checks if check.get_active())
+        dialog.destroy()
+
     def move_tile(self, tile, delta):
         if tile not in self.tiles or not self.tiles:
             return
@@ -1212,6 +1743,7 @@ class SimpleLauncherPanel:
 
     def on_configure_event(self, *_args):
         self.fit_tiles_to_window()
+        self.position_filter_entry()
         for tile in self.tiles:
             tile.queue_draw()
         return False
@@ -1229,6 +1761,9 @@ class SimpleLauncherPanel:
         if self.hidden_poll_source_id is not None:
             GLib.source_remove(self.hidden_poll_source_id)
             self.hidden_poll_source_id = None
+        if self.clock_source_id is not None:
+            GLib.source_remove(self.clock_source_id)
+            self.clock_source_id = None
         if Gtk.main_level() > 0:
             Gtk.main_quit()
 
