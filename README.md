@@ -1,72 +1,169 @@
 # winmirror-launcher
 
-`winmirror-launcher` es un codebase separado derivado tecnicamente de `winmirror`.
+`winmirror-launcher` es una barra visual para X11 que muestra miniaturas vivas de tus ventanas y permite usarlas como lanzador: ver, filtrar, ordenar, seleccionar, enfocar y cerrar ventanas desde un panel compacto.
 
-## Separacion respecto a `winmirror`
+El objetivo es tener una superficie de trabajo auxiliar para escritorios con muchas ventanas, ventanas apiladas o varios espacios de trabajo. Cada ventana aparece como una celda redimensionable con captura periódica; al hacer clic en una miniatura se activa la ventana real.
 
-- `winmirror` original en `/home/chema/bin/winmirror` no se modifica.
-- Este proyecto copia solo la base necesaria para un modo simple inicial:
-  - validacion X11
-  - listado de ventanas
-  - seleccion por click
-  - captura y espejo simple de una ventana
-- Ahora incluye una primera arquitectura multi-ventana reutilizable:
-  - `WindowInfo` y `WindowRegistry`
-  - `MirrorCapture`
-  - `MirrorTile`
-  - smoke window multi-tile
-  - panel horizontal utilizable con acciones de activar/cerrar
-  - robustez ante ventanas cerradas/minimizadas/no capturables
-  - resaltado de ventana activa
-  - layout vertical para el panel
-  - layout grid
-  - reordenamiento manual por arrastrar y soltar
-  - sincronizacion dinamica de ventanas que aparecen/desaparecen
-  - modo flotante o fijo
-  - persistencia de layout, geometria y orden manual
-  - hover-expand opcional
-  - badge de workspace opcional
-  - refresco live o timed
-  - defaults compactos tipo barra horizontal
-  - ventana GUI de configuracion (`Ctrl+,` o `--config`)
-- No incluye en esta base nueva:
-  - crop
-  - crop GUI
-  - reenvio interactivo de mouse/teclado
+## Caracteristicas
 
-## Estado actual
+- Panel visual de ventanas X11 con miniaturas capturadas desde las ventanas reales.
+- Clic izquierdo para activar una ventana y clic medio para cerrarla.
+- Menu contextual con opciones de visualizacion, orden, tamano, FPS e inactividad.
+- Filtro de busqueda integrado como la ultima celda del panel.
+- Selector manual de ventanas detectadas para decidir exactamente cuales se muestran.
+- Orden por ultima app usada, por nombre o manual.
+- Hover-expand configurable para agrandar columnas al pasar el cursor.
+- Opciones para mostrar titulo, clase/app, workspace, bordes y boton de cerrar.
+- Soporte para ventanas minimizadas u ocultas conservando la ultima captura valida.
+- Reloj/fecha como celda opcional, con varios niveles de detalle.
+- Mini-terminales embebidas como celdas adicionales.
+- Ejecutores tipo `gmrun` para lanzar comandos o scripts desde una celda del panel.
+- Modos de inactividad: siempre visible, reducir sin cursor u ocultar sin cursor.
+- Opcion para hacer la barra sticky en todos los workspaces.
+- Modo espejo de una sola ventana y modo smoke multi-ventana para pruebas.
+- Centro de control grafico basico con `--config`.
 
-Esta base prueba que el nuevo paquete puede correr por si mismo antes de evolucionar al panel visual multi-ventana.
+## Requisitos
 
-`winmirror-launcher` funciona como launcher por defecto. Si se ejecuta sin argumentos, abre el panel.
+Este proyecto esta pensado para X11. Necesita herramientas habituales del escritorio X11:
 
-### Defaults actuales del panel
+- Python 3
+- GTK 3 / PyGObject
+- GDK X11 bindings
+- VTE 2.91 para mini-terminales
+- `wmctrl`
+- `xdotool`
+- `xwininfo`
+- `xprop`
 
-- layout horizontal
-- panel flotante y movible
-- barra compacta
-- sin titulo por tile
-- sin boton cerrar por tile
-- sin badge de workspace
-- sin hover-expand por defecto
+En sistemas Arch/Mabox, los paquetes suelen corresponder a nombres como `python-gobject`, `gtk3`, `vte3`, `wmctrl`, `xdotool` y `xorg-xwininfo`.
 
-## Ejemplos
+## Instalacion Local
+
+Desde el repositorio:
+
+```bash
+./install-local.sh
+```
+
+El instalador deja el comando disponible como:
+
+```bash
+winmirror-launcher
+```
+
+Tambien instala el lanzador de escritorio si el entorno usa archivos `.desktop` en `~/.local/share/applications`.
+
+## Uso Rapido
+
+Abrir la barra principal:
+
+```bash
+winmirror-launcher
+```
+
+Listar ventanas detectadas:
+
+```bash
+winmirror-launcher --list
+```
+
+Abrir el centro de control:
+
+```bash
+winmirror-launcher --config
+```
+
+Abrir la barra con opciones iniciales:
+
+```bash
+winmirror-launcher --panel --tile-width 120 --tile-height 72 --fps 1
+winmirror-launcher --panel --show-title --show-borders
+winmirror-launcher --panel --sticky-workspaces
+winmirror-launcher --panel --idle-mode collapse --idle-delay-ms 900
+```
+
+Abrir un espejo de una ventana concreta:
+
+```bash
+winmirror-launcher --window-id 0x04000001
+winmirror-launcher --pick
+```
+
+## Panel Principal
+
+Si se ejecuta sin argumentos, `winmirror-launcher` abre el panel principal.
+
+El panel se compone de celdas. Las ventanas ocupan las primeras celdas. Despues pueden aparecer mini-terminales, ejecutores y el reloj. El buscador siempre ocupa la ultima celda para que nunca tape miniaturas ni quede flotando encima de otras ventanas.
+
+El menu contextual se abre con clic derecho sobre el panel o sobre una miniatura. Desde ahi se pueden cambiar las opciones principales.
+
+## Seleccion de Ventanas
+
+La opcion `Seleccionar ventanas...` abre un dialogo con el total de ventanas detectadas y un checkbox por ventana. Esto permite controlar manualmente que ventanas aparecen en la barra.
+
+El buscador filtra dentro de la seleccion activa. Si no hay resultados, el buscador conserva su propia celda para poder limpiar o cambiar la busqueda.
+
+## Reloj y Fecha
+
+La opcion `Hora y fecha` permite activar una celda de reloj y elegir el detalle mostrado:
+
+- Hora
+- Hora con segundos
+- Fecha y hora
+- Completo
+
+Cuando esta activo, el reloj se coloca justo antes del buscador.
+
+## Mini-Terminales
+
+La opcion `Mini terminales` permite agregar una o varias terminales embebidas. Cada mini-terminal ocupa una celda del panel y lanza el shell configurado en `$SHELL`.
+
+Opciones disponibles:
+
+- Agregar mini terminal
+- Quitar ultima
+- Quitar todas
+
+## Ejecutores
+
+La opcion `Ejecutores` permite agregar entradas compactas tipo `gmrun`. Cada ejecutor ocupa una celda y lanza el comando escrito al presionar Enter.
+
+Los comandos se ejecutan mediante:
+
+```bash
+/bin/sh -lc 'comando'
+```
+
+Esto permite lanzar scripts, comandos con argumentos, redirecciones y pipelines.
+
+## Opciones Utiles
 
 ```bash
 winmirror-launcher --help
-winmirror-launcher
-winmirror-launcher --config
 winmirror-launcher --list
-winmirror-launcher --panel --limit 4
-winmirror-launcher --panel --layout vertical --limit 4
-winmirror-launcher --panel --layout grid --limit 6
-winmirror-launcher --panel --panel-mode fixed --anchor-edge bottom --layout horizontal
-winmirror-launcher --panel --refresh-mode timed --refresh-interval-ms 1200
-winmirror-launcher --panel --hide-workspace-badge --disable-hover-expand
+winmirror-launcher --panel
+winmirror-launcher --panel --show-title
+winmirror-launcher --panel --show-close
+winmirror-launcher --panel --show-workspace
+winmirror-launcher --panel --show-borders
+winmirror-launcher --panel --label-mode app
+winmirror-launcher --panel --order name
+winmirror-launcher --panel --order manual
+winmirror-launcher --panel --hover-mode medium
+winmirror-launcher --panel --hover-scale 1.5
+winmirror-launcher --panel --fps 4
+winmirror-launcher --panel --frame-interval-seconds 10
+winmirror-launcher --panel --exclude-window 0x04000001
 winmirror-launcher --smoke-multi --limit 4
-winmirror-launcher --pick
-winmirror-launcher --window-id 0x04000001 --always-on-top
 ```
+
+## Estado y Limitaciones
+
+- Solo soporta X11.
+- La captura depende de que el compositor/driver permita leer pixbufs de ventana.
+- Las ventanas minimizadas u ocultas conservan la ultima captura valida, pero no pueden actualizar imagen mientras no sean capturables.
+- Las mini-terminales requieren VTE 2.91 disponible desde PyGObject.
 
 ## Licencia
 
