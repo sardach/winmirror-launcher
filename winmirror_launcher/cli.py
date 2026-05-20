@@ -11,7 +11,7 @@ from .control_center import main as control_center_main
 from .mirror import SimpleMirrorWindow
 from .panel import LauncherPanelWindow
 from .persistence import StateStore
-from .simple_panel import DEFAULT_TILE_HEIGHT, DEFAULT_TILE_WIDTH, SimpleLauncherPanel
+from .simple_panel import DEFAULT_TILE_HEIGHT, DEFAULT_TILE_WIDTH, TINT2_PROFILES, SimpleLauncherPanel
 from .smoke import MultiMirrorSmokeWindow
 from .window_model import WindowInfo
 from .window_registry import WindowRegistry
@@ -21,8 +21,8 @@ from .x11 import ensure_x11, parse_window_id, pick_window_id_with_xwininfo
 def build_parser():
     parser = argparse.ArgumentParser(
         description=(
-            "Base separada derivada de winmirror para evolucionar hacia un "
-            "launcher visual de ventanas X11."
+            "Barra visual de ventanas X11 con miniaturas vivas y utilidades "
+            "compactas para el escritorio."
         )
     )
     parser.add_argument(
@@ -228,6 +228,17 @@ def build_parser():
         default=[],
         help="Excluye una ventana concreta del panel simple por ID decimal o hex",
     )
+    parser.add_argument(
+        "--show-tint2",
+        action="store_true",
+        help="Muestra una celda tint2 de doble ancho antes del buscador",
+    )
+    parser.add_argument(
+        "--tint2-profile",
+        choices=sorted(TINT2_PROFILES),
+        default="default",
+        help="Perfil tint2 inicial para la celda integrada",
+    )
     return parser
 
 
@@ -296,6 +307,8 @@ def main(argv=None):
             idle_mode=args.idle_mode,
             idle_delay_ms=args.idle_delay_ms,
             excluded_window_ids=args.exclude_window,
+            show_tint2=args.show_tint2,
+            tint2_profile=args.tint2_profile,
             registry=registry,
         )
         Gtk.main()

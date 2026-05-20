@@ -16,6 +16,7 @@ El objetivo es tener una superficie de trabajo auxiliar para escritorios con muc
 - Opciones para mostrar titulo, clase/app, workspace, bordes y boton de cerrar.
 - Soporte para ventanas minimizadas u ocultas conservando la ultima captura valida.
 - Reloj/fecha como celda opcional, con varios niveles de detalle.
+- Celda opcional para alojar un panel `tint2` compacto de doble ancho.
 - Mini-terminales embebidas como celdas adicionales.
 - Ejecutores tipo `gmrun` para lanzar comandos o scripts desde una celda del panel.
 - Modos de inactividad: siempre visible, reducir sin cursor u ocultar sin cursor.
@@ -35,6 +36,7 @@ Este proyecto esta pensado para X11. Necesita herramientas habituales del escrit
 - `xdotool`
 - `xwininfo`
 - `xprop`
+- `tint2` opcional para la celda de panel integrada
 
 En sistemas Arch/Mabox, los paquetes suelen corresponder a nombres como `python-gobject`, `gtk3`, `vte3`, `wmctrl`, `xdotool` y `xorg-xwininfo`.
 
@@ -81,6 +83,7 @@ winmirror-launcher --panel --tile-width 120 --tile-height 72 --fps 1
 winmirror-launcher --panel --show-title --show-borders
 winmirror-launcher --panel --sticky-workspaces
 winmirror-launcher --panel --idle-mode collapse --idle-delay-ms 900
+winmirror-launcher --panel --show-tint2 --tint2-profile default
 ```
 
 Abrir un espejo de una ventana concreta:
@@ -94,7 +97,7 @@ winmirror-launcher --pick
 
 Si se ejecuta sin argumentos, `winmirror-launcher` abre el panel principal.
 
-El panel se compone de celdas. Las ventanas ocupan las primeras celdas. Despues pueden aparecer mini-terminales, ejecutores y el reloj. El buscador siempre ocupa la ultima celda para que nunca tape miniaturas ni quede flotando encima de otras ventanas.
+El panel se compone de celdas. Las ventanas ocupan las primeras celdas. Despues pueden aparecer mini-terminales, ejecutores, el reloj y la celda tint2. El buscador siempre ocupa la ultima celda para que nunca tape miniaturas ni quede flotando encima de otras ventanas.
 
 El menu contextual se abre con clic derecho sobre el panel o sobre una miniatura. Desde ahi se pueden cambiar las opciones principales.
 
@@ -113,7 +116,22 @@ La opcion `Hora y fecha` permite activar una celda de reloj y elegir el detalle 
 - Fecha y hora
 - Completo
 
-Cuando esta activo, el reloj se coloca justo antes del buscador.
+Cuando esta activo sin tint2, el reloj se coloca justo antes del buscador. Si tint2 tambien esta activo, tint2 ocupa el espacio intermedio entre reloj y buscador.
+
+## Tint2 Integrado
+
+La opcion `Tint2` permite activar una celda de doble ancho pensada para contener un panel `tint2` compacto. La barra genera un archivo temporal de configuracion, lanza `tint2` con ese perfil y recoloca su ventana dentro del rectangulo reservado.
+
+Perfiles disponibles:
+
+- `default`: configuracion generica con taskbar compacta, sin reloj, systray ni extras.
+- `chema-compact`: configuracion compacta que lee los `launcher_item_app` del tint2 actual en `~/.config/tint2/tint2-sessionfile` o `~/.config/tint2/tint2rc`, elimina secciones innecesarias y prioriza caber con el maximo de iconos.
+
+Tambien se puede abrir directamente desde CLI:
+
+```bash
+winmirror-launcher --panel --show-tint2 --tint2-profile chema-compact
+```
 
 ## Mini-Terminales
 
@@ -155,6 +173,7 @@ winmirror-launcher --panel --hover-scale 1.5
 winmirror-launcher --panel --fps 4
 winmirror-launcher --panel --frame-interval-seconds 10
 winmirror-launcher --panel --exclude-window 0x04000001
+winmirror-launcher --panel --show-tint2 --tint2-profile chema-compact
 winmirror-launcher --smoke-multi --limit 4
 ```
 
@@ -164,6 +183,7 @@ winmirror-launcher --smoke-multi --limit 4
 - La captura depende de que el compositor/driver permita leer pixbufs de ventana.
 - Las ventanas minimizadas u ocultas conservan la ultima captura valida, pero no pueden actualizar imagen mientras no sean capturables.
 - Las mini-terminales requieren VTE 2.91 disponible desde PyGObject.
+- La celda tint2 requiere `tint2` y `wmctrl`; la configuracion se genera como archivo temporal y se elimina al cerrar la barra.
 
 ## Licencia
 
