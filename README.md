@@ -16,7 +16,7 @@ El objetivo es tener una superficie de trabajo auxiliar para escritorios con muc
 - Opciones para mostrar titulo, clase/app, workspace, bordes y boton de cerrar.
 - Soporte para ventanas minimizadas u ocultas conservando la ultima captura valida.
 - Reloj/fecha como celda opcional, con varios niveles de detalle.
-- Celda opcional para alojar un panel `tint2` compacto de doble ancho.
+- Celda opcional para alojar un panel `tint2` compacto con ancho configurable.
 - Mini-terminales embebidas como celdas adicionales.
 - Ejecutores tipo `gmrun` para lanzar comandos o scripts desde una celda del panel.
 - Modos de inactividad: siempre visible, reducir sin cursor u ocultar sin cursor.
@@ -83,7 +83,7 @@ winmirror-launcher --panel --tile-width 120 --tile-height 72 --fps 1
 winmirror-launcher --panel --show-title --show-borders
 winmirror-launcher --panel --sticky-workspaces
 winmirror-launcher --panel --idle-mode collapse --idle-delay-ms 900
-winmirror-launcher --panel --show-tint2 --tint2-profile default
+winmirror-launcher --panel --show-tint2 --tint2-profile default --tint2-units 3
 ```
 
 Abrir un espejo de una ventana concreta:
@@ -120,7 +120,7 @@ Cuando esta activo sin tint2, el reloj se coloca justo antes del buscador. Si ti
 
 ## Tint2 Integrado
 
-La opcion `Tint2` permite activar una celda de doble ancho pensada para contener un panel `tint2` compacto. La barra genera un archivo temporal de configuracion con el tamano exacto de la celda, lanza `tint2` con ese perfil y recoloca su ventana dentro del rectangulo reservado.
+La opcion `Tint2` permite activar una celda de ancho configurable pensada para contener un panel `tint2` compacto. Por defecto ocupa 3 espacios del panel. La barra genera un archivo temporal de configuracion con el tamano exacto de la celda, lanza `tint2` con ese perfil y recoloca su ventana dentro del rectangulo reservado.
 
 Perfiles disponibles:
 
@@ -130,8 +130,10 @@ Perfiles disponibles:
 Tambien se puede abrir directamente desde CLI:
 
 ```bash
-winmirror-launcher --panel --show-tint2 --tint2-profile chema-compact
+winmirror-launcher --panel --show-tint2 --tint2-profile chema-compact --tint2-units 3
 ```
+
+Desde el menu contextual se puede elegir entre 1 y 8 espacios para tint2. Si quieres que entren mas iconos de bandeja o launchers, sube ese valor.
 
 ## Mini-Terminales
 
@@ -173,7 +175,7 @@ winmirror-launcher --panel --hover-scale 1.5
 winmirror-launcher --panel --fps 4
 winmirror-launcher --panel --frame-interval-seconds 10
 winmirror-launcher --panel --exclude-window 0x04000001
-winmirror-launcher --panel --show-tint2 --tint2-profile chema-compact
+winmirror-launcher --panel --show-tint2 --tint2-profile chema-compact --tint2-units 4
 winmirror-launcher --smoke-multi --limit 4
 ```
 

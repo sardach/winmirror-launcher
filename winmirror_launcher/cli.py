@@ -11,7 +11,15 @@ from .control_center import main as control_center_main
 from .mirror import SimpleMirrorWindow
 from .panel import LauncherPanelWindow
 from .persistence import StateStore
-from .simple_panel import DEFAULT_TILE_HEIGHT, DEFAULT_TILE_WIDTH, TINT2_PROFILES, SimpleLauncherPanel
+from .simple_panel import (
+    DEFAULT_TILE_HEIGHT,
+    DEFAULT_TILE_WIDTH,
+    DEFAULT_TINT2_SLOT_UNITS,
+    MAX_TINT2_SLOT_UNITS,
+    MIN_TINT2_SLOT_UNITS,
+    TINT2_PROFILES,
+    SimpleLauncherPanel,
+)
 from .smoke import MultiMirrorSmokeWindow
 from .window_model import WindowInfo
 from .window_registry import WindowRegistry
@@ -231,13 +239,22 @@ def build_parser():
     parser.add_argument(
         "--show-tint2",
         action="store_true",
-        help="Muestra una celda tint2 de doble ancho antes del buscador",
+        help="Muestra una celda tint2 antes del buscador",
     )
     parser.add_argument(
         "--tint2-profile",
         choices=sorted(TINT2_PROFILES),
         default="default",
         help="Perfil tint2 inicial para la celda integrada",
+    )
+    parser.add_argument(
+        "--tint2-units",
+        type=int,
+        default=DEFAULT_TINT2_SLOT_UNITS,
+        help=(
+            f"Cantidad de espacios que ocupa tint2 "
+            f"({MIN_TINT2_SLOT_UNITS}-{MAX_TINT2_SLOT_UNITS}, default: {DEFAULT_TINT2_SLOT_UNITS})"
+        ),
     )
     return parser
 
@@ -309,6 +326,7 @@ def main(argv=None):
             excluded_window_ids=args.exclude_window,
             show_tint2=args.show_tint2,
             tint2_profile=args.tint2_profile,
+            tint2_units=args.tint2_units,
             registry=registry,
         )
         Gtk.main()

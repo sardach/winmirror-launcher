@@ -33,7 +33,9 @@ LABEL_MODES = {"title", "app"}
 IDLE_MODES = {"off", "collapse", "hide"}
 CLOCK_MODES = {"time", "time-seconds", "date-time", "full"}
 TINT2_PROFILES = {"default", "chema-compact"}
-TINT2_SLOT_UNITS = 2
+MIN_TINT2_SLOT_UNITS = 1
+MAX_TINT2_SLOT_UNITS = 8
+DEFAULT_TINT2_SLOT_UNITS = 3
 HOVER_MODES = {
     "off": 1.0,
     "soft": 1.08,
@@ -104,6 +106,10 @@ def normalize_clock_mode(value):
 
 def normalize_tint2_profile(value):
     return value if value in TINT2_PROFILES else "default"
+
+
+def normalize_tint2_units(value):
+    return clamp(value, MIN_TINT2_SLOT_UNITS, MAX_TINT2_SLOT_UNITS, DEFAULT_TINT2_SLOT_UNITS)
 
 
 def read_current_tint2_launchers():
@@ -417,16 +423,18 @@ class CommandRunnerSlot(Gtk.Box):
 
 
 class Tint2Slot(Gtk.Box):
-    def __init__(self, profile="default"):
+    def __init__(self, profile="default", take_systray=False):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.profile = normalize_tint2_profile(profile)
+        self.take_systray = bool(take_systray)
         self.process = None
         self.config_path = None
         self.move_source_id = None
         self.target_rect = None
         self.config_size = None
         self.window_id = None
-        self.set_size_request(DEFAULT_TILE_WIDTH * TINT2_SLOT_UNITS, DEFAULT_TILE_HEIGHT)
+        self.suspended_tint2_commands = []
+        self.set_size_request(DEFAULT_TILE_WIDTH * DEFAULT_TINT2_SLOT_UNITS, DEFAULT_TILE_HEIGHT)
 
         self.label = Gtk.Label(label="tint2")
         self.label.set_xalign(0.5)
@@ -437,12 +445,21 @@ class Tint2Slot(Gtk.Box):
         self.profile = normalize_tint2_profile(profile)
         self.restart()
 
+    def set_take_systray(self, active):
+        active = bool(active)
+        if self.take_systray == active:
+            return
+        self.take_systray = active
+        self.restart()
+
     def start(self):
         if self.process is not None and self.process.poll() is None:
             return
         if subprocess.run(["/bin/sh", "-lc", "command -v tint2"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
             self.label.set_text("tint2 no encontrado")
             return
+        if self.take_systray:
+            self.suspend_external_tint2_panels()
         self.write_config()
         try:
             self.process = subprocess.Popen(
@@ -458,6 +475,50 @@ class Tint2Slot(Gtk.Box):
         self.label.set_text("tint2")
         self.schedule_move()
 
+    def suspend_external_tint2_panels(self):
+        proc = subprocess.run(["pgrep", "-af", "tint2"], text=True, capture_output=True, check=False)
+        if proc.returncode not in {0, 1}:
+            return
+        own_pid = self.process.pid if self.process is not None else None
+        for line in proc.stdout.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            command = parts[1]
+            if pid == own_pid or command.startswith("pgrep ") or "/tmp/winmirror-tint2" in command:
+                continue
+            if not (command == "tint2" or command.startswith("tint2 ")):
+                continue
+            if command not in self.suspended_tint2_commands:
+                self.suspended_tint2_commands.append(command)
+            try:
+                os.kill(pid, 15)
+            except OSError:
+                pass
+
+    def restore_external_tint2_panels(self):
+        if not self.suspended_tint2_commands:
+            return
+        running = subprocess.run(["pgrep", "-af", "tint2"], text=True, capture_output=True, check=False).stdout
+        commands = list(self.suspended_tint2_commands)
+        self.suspended_tint2_commands.clear()
+        for command in commands:
+            if command in running:
+                continue
+            try:
+                subprocess.Popen(
+                    ["/bin/sh", "-lc", command],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except OSError:
+                pass
+
     def write_config(self):
         if self.config_path is None:
             handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix="winmirror-tint2-", suffix=".tint2rc", delete=False)
@@ -465,7 +526,7 @@ class Tint2Slot(Gtk.Box):
         else:
             handle = self.config_path.open("w", encoding="utf-8")
         with handle:
-            width = self.target_rect[2] if self.target_rect else DEFAULT_TILE_WIDTH * TINT2_SLOT_UNITS
+            width = self.target_rect[2] if self.target_rect else DEFAULT_TILE_WIDTH * DEFAULT_TINT2_SLOT_UNITS
             height = self.target_rect[3] if self.target_rect else DEFAULT_TILE_HEIGHT
             self.config_size = (width, height)
             handle.write(build_tint2_config(self.profile, width, height))
@@ -494,6 +555,8 @@ class Tint2Slot(Gtk.Box):
             except OSError:
                 pass
             self.config_path = None
+        self.config_size = None
+        self.restore_external_tint2_panels()
 
     def set_target_rect(self, x, y, width, height):
         width = max(1, int(width))
@@ -993,6 +1056,7 @@ class SimpleLauncherPanel:
         clock_mode="date-time",
         show_tint2=False,
         tint2_profile="default",
+        tint2_units=DEFAULT_TINT2_SLOT_UNITS,
         registry=None,
     ):
         self.registry = registry or WindowRegistry()
@@ -1020,6 +1084,7 @@ class SimpleLauncherPanel:
         self.clock_source_id = None
         self.show_tint2 = bool(show_tint2)
         self.tint2_profile = normalize_tint2_profile(tint2_profile)
+        self.tint2_units = normalize_tint2_units(tint2_units)
         self.window_refresh_source_id = None
         self.active_window_source_id = None
         self.idle_source_id = None
@@ -1146,7 +1211,7 @@ class SimpleLauncherPanel:
         return entries
 
     def widget_slot_units(self, widget):
-        return TINT2_SLOT_UNITS if widget is self.tint2_slot else 1
+        return self.tint2_units if widget is self.tint2_slot else 1
 
     def iter_layout_positions(self, entries, columns):
         columns = max(1, int(columns))
@@ -1710,6 +1775,18 @@ class SimpleLauncherPanel:
             item.set_active(self.tint2_profile == profile)
             item.connect("toggled", lambda check, value=profile: check.get_active() and self.set_tint2_profile(value))
             tint2_menu.append(item)
+        tint2_menu.append(Gtk.SeparatorMenuItem())
+        units_group = None
+        for units in range(MIN_TINT2_SLOT_UNITS, MAX_TINT2_SLOT_UNITS + 1):
+            label = f"{units} espacios" if units != 1 else "1 espacio"
+            item = Gtk.RadioMenuItem.new_with_label_from_widget(units_group, label)
+            if units_group is None:
+                units_group = item
+            item.set_active(self.tint2_units == units)
+            item.connect("toggled", lambda check, value=units: check.get_active() and self.set_tint2_units(value))
+            tint2_menu.append(item)
+        tint2_menu.append(Gtk.SeparatorMenuItem())
+        self.add_check_item(tint2_menu, "Tomar bandeja del sistema", self.tint2_slot.take_systray, self.set_tint2_take_systray)
         restart_tint2_item = Gtk.MenuItem(label="Reiniciar tint2")
         restart_tint2_item.set_sensitive(self.show_tint2)
         restart_tint2_item.connect("activate", lambda *_args: self.restart_tint2_slot())
@@ -1898,6 +1975,16 @@ class SimpleLauncherPanel:
         self.tint2_slot.set_profile(self.tint2_profile)
         self.current_columns = 0
         self.current_rows = 0
+        self.fit_tiles_to_window()
+
+    def set_tint2_units(self, units):
+        self.tint2_units = normalize_tint2_units(units)
+        self.current_columns = 0
+        self.current_rows = 0
+        self.fit_tiles_to_window()
+
+    def set_tint2_take_systray(self, active):
+        self.tint2_slot.set_take_systray(active)
         self.fit_tiles_to_window()
 
     def restart_tint2_slot(self):
