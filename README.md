@@ -120,12 +120,12 @@ Cuando esta activo sin tint2, el reloj se coloca justo antes del buscador. Si ti
 
 ## Tint2 Integrado
 
-La opcion `Tint2` permite activar una celda de doble ancho pensada para contener un panel `tint2` compacto. La barra genera un archivo temporal de configuracion, lanza `tint2` con ese perfil y recoloca su ventana dentro del rectangulo reservado.
+La opcion `Tint2` permite activar una celda de doble ancho pensada para contener un panel `tint2` compacto. La barra genera un archivo temporal de configuracion con el tamano exacto de la celda, lanza `tint2` con ese perfil y recoloca su ventana dentro del rectangulo reservado.
 
 Perfiles disponibles:
 
-- `default`: configuracion generica con taskbar compacta, sin reloj, systray ni extras.
-- `chema-compact`: configuracion compacta que lee los `launcher_item_app` del tint2 actual en `~/.config/tint2/tint2-sessionfile` o `~/.config/tint2/tint2rc`, elimina secciones innecesarias y prioriza caber con el maximo de iconos.
+- `default`: configuracion generica con menu de aplicaciones si esta disponible, mostrar escritorio, `gmrun`, taskbar compacta y bandeja del sistema.
+- `chema-compact`: configuracion compacta con menu de aplicaciones, mostrar escritorio, `gmrun`, bandeja del sistema y los `launcher_item_app` del tint2 actual en `~/.config/tint2/tint2-sessionfile` o `~/.config/tint2/tint2rc`, eliminando secciones innecesarias para priorizar el maximo de iconos.
 
 Tambien se puede abrir directamente desde CLI:
 

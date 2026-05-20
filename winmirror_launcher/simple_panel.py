@@ -136,27 +136,59 @@ def read_current_tint2_launchers():
     return launchers
 
 
-def build_tint2_config(profile):
+def existing_launcher_line(path):
+    expanded = Path(os.path.expanduser(path))
+    if expanded.exists():
+        return f"launcher_item_app = {path}"
+    return None
+
+
+def first_existing_launcher_line(*paths):
+    for path in paths:
+        line = existing_launcher_line(path)
+        if line:
+            return line
+    return None
+
+
+def standard_tint2_launchers():
+    return [
+        line
+        for line in (
+            first_existing_launcher_line("~/.local/share/applications/jgmenu.desktop", "/usr/share/applications/jgmenu.desktop"),
+            first_existing_launcher_line("~/.local/share/applications/show_desktop.desktop", "/usr/share/applications/show_desktop.desktop"),
+            existing_launcher_line("/usr/share/applications/gmrun.desktop"),
+        )
+        if line
+    ]
+
+
+def build_tint2_config(profile, width=240, height=48):
     profile = normalize_tint2_profile(profile)
-    launcher_lines = []
-    panel_items = "T"
+    launcher_lines = standard_tint2_launchers()
+    panel_items = "LTS" if launcher_lines else "TS"
+    width = max(48, int(width or 240))
+    height = max(18, int(height or 48))
+    icon_size = max(12, min(22, height - 6))
     taskbar_lines = [
         "taskbar_mode = multi_desktop",
         "taskbar_hide_if_empty = 0",
         "task_icon = 1",
         "task_text = 0",
-        "task_maximum_size = 24 24",
+        f"task_maximum_size = {icon_size + 2} {icon_size + 2}",
         "task_padding = 1 1 1",
     ]
     if profile == "chema-compact":
-        launcher_lines = read_current_tint2_launchers()
-        panel_items = "L" if launcher_lines else "T"
+        for line in read_current_tint2_launchers():
+            if line not in launcher_lines:
+                launcher_lines.append(line)
+        panel_items = "LS" if launcher_lines else "TS"
         taskbar_lines = [
             "taskbar_mode = multi_desktop",
             "taskbar_hide_if_empty = 1",
             "task_icon = 1",
             "task_text = 0",
-            "task_maximum_size = 20 20",
+            f"task_maximum_size = {icon_size} {icon_size}",
             "task_padding = 0 0 0",
         ]
 
@@ -178,9 +210,9 @@ border_color = #404852 100
 
 panel_monitor = primary
 panel_position = top left horizontal
-panel_size = 240 48
+panel_size = {width} {height}
 panel_margin = 0 0
-panel_padding = 1 1 1
+panel_padding = 0 0 0
 panel_background_id = 1
 panel_items = {panel_items}
 panel_window_name = winmirror-launcher-tint2
@@ -191,10 +223,10 @@ wm_menu = 0
 disable_transparency = 1
 mouse_effects = 0
 
-launcher_padding = 1 1 1
+launcher_padding = 0 0 0
 launcher_background_id = 0
 launcher_icon_background_id = 0
-launcher_icon_size = 20
+launcher_icon_size = {icon_size}
 {launcher_block}
 taskbar_padding = 1 1 1
 taskbar_background_id = 0
@@ -212,6 +244,14 @@ task_icon_asb = 100 0 0
 task_active_icon_asb = 100 0 0
 task_urgent_icon_asb = 100 0 0
 task_iconified_icon_asb = 75 0 0
+
+systray_padding = 1 0 1
+systray_background_id = 0
+systray_sort = ascending
+systray_icon_size = {icon_size}
+systray_icon_asb = 100 0 0
+systray_monitor = 1
+systray_name_filter =
 
 tooltip = 0
 """
@@ -384,6 +424,7 @@ class Tint2Slot(Gtk.Box):
         self.config_path = None
         self.move_source_id = None
         self.target_rect = None
+        self.config_size = None
         self.window_id = None
         self.set_size_request(DEFAULT_TILE_WIDTH * TINT2_SLOT_UNITS, DEFAULT_TILE_HEIGHT)
 
@@ -424,7 +465,10 @@ class Tint2Slot(Gtk.Box):
         else:
             handle = self.config_path.open("w", encoding="utf-8")
         with handle:
-            handle.write(build_tint2_config(self.profile))
+            width = self.target_rect[2] if self.target_rect else DEFAULT_TILE_WIDTH * TINT2_SLOT_UNITS
+            height = self.target_rect[3] if self.target_rect else DEFAULT_TILE_HEIGHT
+            self.config_size = (width, height)
+            handle.write(build_tint2_config(self.profile, width, height))
 
     def restart(self):
         was_running = self.process is not None and self.process.poll() is None
@@ -452,7 +496,17 @@ class Tint2Slot(Gtk.Box):
             self.config_path = None
 
     def set_target_rect(self, x, y, width, height):
-        self.target_rect = (int(x), int(y), max(1, int(width)), max(1, int(height)))
+        width = max(1, int(width))
+        height = max(1, int(height))
+        self.target_rect = (int(x), int(y), width, height)
+        if (
+            self.process is not None
+            and self.process.poll() is None
+            and self.config_size is not None
+            and (abs(self.config_size[0] - width) > 2 or abs(self.config_size[1] - height) > 2)
+        ):
+            self.restart()
+            return
         self.schedule_move()
 
     def schedule_move(self):
@@ -469,13 +523,19 @@ class Tint2Slot(Gtk.Box):
             return False
         x, y, width, height = self.target_rect
         subprocess.run(
-            ["wmctrl", "-ir", window_id, "-b", "add,skip_taskbar,skip_pager,above"],
+            ["wmctrl", "-ir", window_id, "-b", "add,skip_taskbar,skip_pager"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
         )
         subprocess.run(
             ["wmctrl", "-ir", window_id, "-e", f"0,{x},{y},{width},{height}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        subprocess.run(
+            ["xdotool", "windowmove", window_id, str(x), str(y), "windowsize", window_id, str(width), str(height)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
