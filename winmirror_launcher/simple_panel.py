@@ -40,6 +40,8 @@ MIN_TINT2_SLOT_UNITS = 1
 MAX_TINT2_SLOT_UNITS = 8
 DEFAULT_TINT2_SLOT_UNITS = 3
 DEFAULT_TINT2_PLACEMENT = "cell"
+START_ICON_PATH = Path("/home/chema/Descargas/kris.jpg")
+START_LAUNCHER_PATH = Path.home() / ".local" / "share" / "applications" / "winmirror-start.desktop"
 HOVER_MODES = {
     "off": 1.0,
     "soft": 1.08,
@@ -199,11 +201,39 @@ def first_existing_launcher_line(*paths):
     return None
 
 
+def ensure_start_launcher():
+    if not START_ICON_PATH.exists():
+        return None
+    content = f"""[Desktop Entry]
+Type=Application
+Name=Start
+GenericName=Application Menu
+Comment=Displays menu for launching installed applications
+Exec=jgmenu_run
+Terminal=false
+Icon={START_ICON_PATH}
+Categories=System;
+StartupNotify=false
+NoDisplay=true
+"""
+    try:
+        START_LAUNCHER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if not START_LAUNCHER_PATH.exists() or START_LAUNCHER_PATH.read_text(encoding="utf-8", errors="replace") != content:
+            START_LAUNCHER_PATH.write_text(content, encoding="utf-8")
+    except OSError:
+        return None
+    return f"launcher_item_app = {START_LAUNCHER_PATH}"
+
+
 def standard_tint2_launchers():
+    start_launcher = ensure_start_launcher() or first_existing_launcher_line(
+        "~/.local/share/applications/jgmenu.desktop",
+        "/usr/share/applications/jgmenu.desktop",
+    )
     return [
         line
         for line in (
-            first_existing_launcher_line("~/.local/share/applications/jgmenu.desktop", "/usr/share/applications/jgmenu.desktop"),
+            start_launcher,
             first_existing_launcher_line("~/.local/share/applications/show_desktop.desktop", "/usr/share/applications/show_desktop.desktop"),
             existing_launcher_line("/usr/share/applications/gmrun.desktop"),
         )
@@ -212,7 +242,11 @@ def standard_tint2_launchers():
 
 
 def is_start_launcher(line):
-    return "jgmenu.desktop" in line
+    return "jgmenu.desktop" in line or "winmirror-start.desktop" in line
+
+
+def is_preferred_start_launcher(line):
+    return "winmirror-start.desktop" in line
 
 
 def is_show_desktop_launcher(line):
@@ -234,6 +268,8 @@ def order_tint2_launchers(launcher_lines):
     show_desktop = [line for line in ordered if is_show_desktop_launcher(line)]
     runner = [line for line in ordered if is_runner_launcher(line)]
     start_menu = [line for line in ordered if is_start_launcher(line)]
+    preferred_start_menu = [line for line in start_menu if is_preferred_start_launcher(line)]
+    start_menu = preferred_start_menu[:1] or start_menu[:1]
     regular = [
         line
         for line in ordered
@@ -635,8 +671,8 @@ class LauncherGrid(Gtk.DrawingArea):
                 name = desktop_entry_value(path, "Name") or path.stem
                 icon = desktop_entry_value(path, "Icon")
                 command = desktop_entry_value(path, "Exec")
-            if is_start_launcher(line) and Path("/home/chema/Descargas/kris.jpg").exists():
-                icon = "/home/chema/Descargas/kris.jpg"
+            if is_start_launcher(line) and START_ICON_PATH.exists():
+                icon = str(START_ICON_PATH)
             if app_info is not None or command:
                 items.append({"path": path, "name": name, "icon": icon, "command": command, "app_info": app_info})
         self.launchers = items
