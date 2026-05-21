@@ -1962,19 +1962,6 @@ class SimpleLauncherPanel:
             entries.append((self.launcher_grid, self.widget_slot_units(self.launcher_grid)))
         return entries
 
-    def triangle_layout_entries(self):
-        entries = [(tile, 1) for tile in self.visible_tiles()]
-        entries.append((self.filter_entry, 2))
-        entries.extend((slot, 2) for slot in self.executor_slots)
-        entries.extend((slot, 2) for slot in self.terminal_slots)
-        if self.show_clock:
-            entries.append((self.clock_slot, 2))
-        if self.show_tint2 and self.tint2_in_cell():
-            entries.append((self.tint2_slot, 2))
-        if self.show_launchers:
-            entries.append((self.launcher_grid, max(3, self.launcher_units)))
-        return entries
-
     def widget_slot_units(self, widget):
         if widget is self.tint2_slot:
             return self.tint2_units
@@ -2292,10 +2279,12 @@ class SimpleLauncherPanel:
         for tile in self.tiles:
             tile.set_visible(tile in visible_tiles)
             tile.set_triangle_orientation(None)
-        entries = [(slot, self.widget_slot_units(slot)) for slot in self.utility_slots()]
-        entries.append((self.filter_entry, 1))
+        entries = [(self.filter_entry, 1)]
+        entries.extend((slot, self.widget_slot_units(slot)) for slot in self.utility_slots())
         if self.show_tint2 and self.tint2_in_cell():
             entries.append((self.tint2_slot, self.widget_slot_units(self.tint2_slot)))
+        if self.show_launchers:
+            entries.append((self.launcher_grid, self.widget_slot_units(self.launcher_grid)))
 
         utility_height = 0
         utility_columns = 1
@@ -2382,9 +2371,6 @@ class SimpleLauncherPanel:
         width = alloc.width
         height = alloc.height
         if width <= 1 or height <= 1:
-            return
-        if self.mirror_layout_mode == "triangles":
-            self.fit_triangular_layout(width, height)
             return
         entries = self.layout_entries()
         slot_count = sum(units for _widget, units in entries)
