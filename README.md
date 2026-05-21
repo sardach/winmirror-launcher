@@ -19,6 +19,7 @@ El objetivo es tener una superficie de trabajo auxiliar para escritorios con muc
 - Celda opcional para alojar un panel `tint2` compacto con ancho configurable.
 - Mini-terminales embebidas como celdas adicionales.
 - Ejecutores tipo `gmrun` para lanzar comandos o scripts desde una celda del panel.
+- Ventana de barra sin decoracion de Openbox por defecto.
 - Modos de inactividad: siempre visible, reducir sin cursor u ocultar sin cursor.
 - Opcion para hacer la barra sticky en todos los workspaces.
 - Modo espejo de una sola ventana y modo smoke multi-ventana para pruebas.
@@ -125,7 +126,7 @@ La opcion `Tint2` permite activar una celda de ancho configurable o una barra ad
 Perfiles disponibles:
 
 - `default`: configuracion generica con menu de aplicaciones si esta disponible, mostrar escritorio, `gmrun`, taskbar compacta y bandeja del sistema.
-- `chema-compact`: configuracion adaptada desde tu tint2 actual. En modo celda usa botones principales, tus atajos/launchers, volumen, mostrar escritorio, bandeja del sistema y bateria. En modo barra adosada usa el conjunto completo de botones, ejecutores y launchers del panel original, sin reloj porque winmirror ya lo ofrece como celda propia.
+- `chema-compact`: configuracion adaptada desde tu tint2 actual. En modo celda usa botones principales, tus atajos/launchers, volumen, mostrar escritorio, bandeja del sistema y bateria. Mostrar escritorio y menu inicio van en el mismo grupo de iconos que el resto de launchers; el menu inicio se ordena al extremo derecho. En modo barra adosada usa el conjunto completo de botones, ejecutores y launchers del panel original, sin reloj porque winmirror ya lo ofrece como celda propia.
 
 Tambien se puede abrir directamente desde CLI:
 

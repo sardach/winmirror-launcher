@@ -175,6 +175,37 @@ def standard_tint2_launchers():
     ]
 
 
+def is_start_launcher(line):
+    return "jgmenu.desktop" in line
+
+
+def is_show_desktop_launcher(line):
+    return "show_desktop.desktop" in line
+
+
+def is_runner_launcher(line):
+    return "gmrun.desktop" in line
+
+
+def order_tint2_launchers(launcher_lines):
+    ordered = []
+    seen = set()
+    for line in launcher_lines:
+        if line in seen:
+            continue
+        seen.add(line)
+        ordered.append(line)
+    show_desktop = [line for line in ordered if is_show_desktop_launcher(line)]
+    runner = [line for line in ordered if is_runner_launcher(line)]
+    start_menu = [line for line in ordered if is_start_launcher(line)]
+    regular = [
+        line
+        for line in ordered
+        if line not in show_desktop and line not in runner and line not in start_menu
+    ]
+    return show_desktop + runner + regular + start_menu
+
+
 def current_tint2_config_path():
     candidates = [
         Path.home() / ".config" / "tint2" / "micro95_top.tint2rc",
@@ -230,10 +261,22 @@ def is_start_menu_button(block):
     return "mb-jgtools main" in marker_text or "application launcher" in marker_text
 
 
-def move_start_menu_button_right(button_blocks):
-    menu_blocks = [block for block in button_blocks if is_start_menu_button(block)]
-    other_blocks = [block for block in button_blocks if not is_start_menu_button(block)]
-    return other_blocks + menu_blocks
+def is_show_desktop_button(block):
+    marker_text = block.casefold()
+    return "show_desktop" in marker_text or "show desktop" in marker_text
+
+
+def is_launcher_group_button(block):
+    return is_start_menu_button(block) or is_show_desktop_button(block)
+
+
+def tint2_items_for(button_count, exec_count, has_launchers=True, has_battery=True):
+    items = ("P" * button_count) + ("E" * exec_count) + "FS"
+    if has_battery:
+        items += "B"
+    if has_launchers:
+        items += "L"
+    return items
 
 
 def build_tint2_config(profile, width=240, height=48, orientation="horizontal", placement="cell"):
@@ -258,26 +301,25 @@ def build_tint2_config(profile, width=240, height=48, orientation="horizontal", 
     option_blocks = []
     if profile == "chema-compact":
         button_blocks = read_current_tint2_plugin_blocks("button")
-        button_blocks = move_start_menu_button_right(button_blocks)
+        button_blocks = [block for block in button_blocks if not is_launcher_group_button(block)]
         execp_blocks = read_current_tint2_plugin_blocks("execp")
         battery_block = read_current_tint2_option_block(("battery_", "bat1_", "bat2_", "ac_"))
         cell_mode = placement == "cell"
         if cell_mode:
             compact_buttons = button_blocks[:2]
-            if button_blocks and button_blocks[-1] not in compact_buttons:
-                compact_buttons.append(button_blocks[-1])
             plugin_blocks.extend(compact_buttons)
             plugin_blocks.extend(execp_blocks[:1])
             option_blocks.extend(block for block in (battery_block,) if block)
-            panel_items = "PLFEPSBP"
+            panel_items = tint2_items_for(len(compact_buttons), min(1, len(execp_blocks)), bool(launcher_lines), bool(battery_block))
         else:
             plugin_blocks.extend(button_blocks)
             plugin_blocks.extend(execp_blocks)
             option_blocks.extend(block for block in (battery_block,) if block)
-            panel_items = "PPPPPPLFEPSBEPP" if button_blocks or execp_blocks else "LSB"
+            panel_items = tint2_items_for(len(button_blocks), len(execp_blocks), bool(launcher_lines), bool(battery_block))
         for line in read_current_tint2_launchers():
             if line not in launcher_lines:
                 launcher_lines.append(line)
+        launcher_lines = order_tint2_launchers(launcher_lines)
         taskbar_lines = [
             "taskbar_mode = multi_desktop",
             "taskbar_hide_if_empty = 1",
@@ -1246,7 +1288,7 @@ class SimpleLauncherPanel:
         self.win.connect("destroy", self.on_destroy)
         self.win.connect("key-press-event", self.on_key_press)
         self.win.set_resizable(True)
-        self.win.set_decorated(True)
+        self.win.set_decorated(False)
         self.win.connect("configure-event", self.on_configure_event)
         self.win.add_events(
             Gdk.EventMask.BUTTON_PRESS_MASK
