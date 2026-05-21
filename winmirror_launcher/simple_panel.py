@@ -751,7 +751,7 @@ class Tint2Slot(Gtk.Box):
         self.label.set_visible(not use_grid)
 
     def uses_external_tint2(self):
-        return True
+        return not self.uses_launcher_grid()
 
     def set_profile(self, profile):
         self.profile = normalize_tint2_profile(profile)
@@ -913,9 +913,11 @@ class Tint2Slot(Gtk.Box):
         width = max(1, int(width))
         height = max(1, int(height))
         if self.uses_launcher_grid():
-            tint_height = max(18, min(height, max(18, int(round(height * 0.32)))))
-            self.launcher_grid.set_layout_size(width, max(1, height - tint_height))
-            self.target_rect = (int(x), int(y + height - tint_height), width, tint_height)
+            self.launcher_grid.set_layout_size(width, height)
+            self.target_rect = None
+            if self.process is not None or self.config_path is not None:
+                self.stop()
+            return
         else:
             self.target_rect = (int(x), int(y), width, height)
         if (

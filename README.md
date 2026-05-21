@@ -121,12 +121,12 @@ Cuando esta activo sin tint2, el reloj se coloca justo antes del buscador. Si ti
 
 ## Tint2 Integrado
 
-La opcion `Tint2` permite activar una celda de ancho configurable o una barra adosada al panel. Por defecto funciona como celda interna y ocupa 3 espacios del panel. En modo celda, los launchers se dibujan dentro de winmirror para formar una cuadricula real y tint2 se usa solo como franja compacta de sistema. En modo barra adosada, winmirror genera un archivo temporal de configuracion, lanza `tint2` con ese perfil y recoloca su ventana junto al panel.
+La opcion `Tint2` permite activar una celda de ancho configurable o una barra adosada al panel. Por defecto funciona como celda interna y ocupa 3 espacios del panel. En modo celda, los launchers se dibujan dentro de winmirror para formar una cuadricula real y no se lanza una barra tint2 externa. En modo barra adosada, winmirror genera un archivo temporal de configuracion, lanza `tint2` con ese perfil y recoloca su ventana junto al panel.
 
 Perfiles disponibles:
 
 - `default`: configuracion generica con menu de aplicaciones si esta disponible, mostrar escritorio, `gmrun`, taskbar compacta y bandeja del sistema.
-- `chema-compact`: configuracion adaptada desde tu tint2 actual. En modo celda, winmirror dibuja tus atajos/launchers como una cuadricula adaptable porque tint2 no ajusta el launcher `L` en varias filas; tint2 queda debajo como host compacto de volumen, bandeja del sistema y bateria. Mostrar escritorio y menu inicio van en el mismo grupo de iconos que el resto de launchers; el menu inicio se ordena al extremo derecho y usa el icono personalizado del menu. En modo barra adosada usa el conjunto completo de botones, ejecutores y launchers del panel original, sin reloj porque winmirror ya lo ofrece como celda propia.
+- `chema-compact`: configuracion adaptada desde tu tint2 actual. En modo celda, winmirror dibuja tus atajos/launchers como una cuadricula adaptable porque tint2 no ajusta el launcher `L` en varias filas; no hay bandeja del sistema en esa celda porque el systray X11 necesita una ventana host externa y se comportaria como una barra separada. Mostrar escritorio y menu inicio van en el mismo grupo de iconos que el resto de launchers; el menu inicio se ordena al extremo derecho y usa el icono personalizado del menu. En modo barra adosada usa el conjunto completo de botones, ejecutores, bandeja del sistema y launchers del panel original, sin reloj porque winmirror ya lo ofrece como celda propia.
 
 Tambien se puede abrir directamente desde CLI:
 
