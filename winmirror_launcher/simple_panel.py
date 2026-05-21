@@ -249,19 +249,18 @@ def build_tint2_config(profile, width=240, height=48, orientation="horizontal", 
         button_blocks = read_current_tint2_plugin_blocks("button")
         execp_blocks = read_current_tint2_plugin_blocks("execp")
         battery_block = read_current_tint2_option_block(("battery_", "bat1_", "bat2_", "ac_"))
-        clock_block = read_current_tint2_option_block(("time1_", "time2_", "clock_"))
         cell_mode = placement == "cell"
         if cell_mode:
             plugin_blocks.extend(button_blocks[:3])
             plugin_blocks.extend(execp_blocks[:1])
-            option_blocks.extend(block for block in (battery_block, clock_block) if block)
+            option_blocks.extend(block for block in (battery_block,) if block)
             launcher_lines = []
-            panel_items = "PPEPSBC"
+            panel_items = "PPEPSB"
         else:
             plugin_blocks.extend(button_blocks)
             plugin_blocks.extend(execp_blocks)
-            option_blocks.extend(block for block in (battery_block, clock_block) if block)
-            panel_items = "PPPPPPLFEPSBECPP" if button_blocks or execp_blocks else "LSBC"
+            option_blocks.extend(block for block in (battery_block,) if block)
+            panel_items = "PPPPPPLFEPSBEPP" if button_blocks or execp_blocks else "LSB"
         if not cell_mode:
             for line in read_current_tint2_launchers():
                 if line not in launcher_lines:
