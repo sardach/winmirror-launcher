@@ -1,8 +1,12 @@
 import gi
+import json
 import math
 import os
 import subprocess
 import tempfile
+import threading
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 gi.require_version("Gtk", "3.0")
@@ -57,6 +61,10 @@ MAX_HOVER_SCALE = 2.5
 MIN_CLOCK_FONT_SIZE = 6
 MAX_CLOCK_FONT_SIZE = 32
 DEFAULT_CLOCK_FONT_SIZE = 10
+DEFAULT_CLOCK_FONT_COLOR = "#e6ebf0"
+DEFAULT_BACKGROUND_COLOR = "#000000"
+DEFAULT_BACKGROUND_ALPHA = 0.0
+WEATHER_REFRESH_SECONDS = 900
 
 
 def clamp(value, lower, upper, fallback):
@@ -72,6 +80,50 @@ def clear_background(cr):
     cr.set_operator(0)
     cr.paint()
     cr.restore()
+
+
+def clamp_float(value, lower, upper, fallback):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(lower, min(upper, value))
+
+
+def normalize_hex_color(value, fallback):
+    if not isinstance(value, str):
+        return fallback
+    text = value.strip()
+    if len(text) == 7 and text.startswith("#"):
+        try:
+            int(text[1:], 16)
+        except ValueError:
+            return fallback
+        return text.lower()
+    return fallback
+
+
+def color_to_rgb(value, fallback=DEFAULT_CLOCK_FONT_COLOR):
+    text = normalize_hex_color(value, fallback)
+    return tuple(int(text[index : index + 2], 16) / 255.0 for index in (1, 3, 5))
+
+
+def rgba_to_hex(rgba):
+    return "#{:02x}{:02x}{:02x}".format(
+        int(round(clamp_float(rgba.red, 0.0, 1.0, 0.0) * 255)),
+        int(round(clamp_float(rgba.green, 0.0, 1.0, 0.0) * 255)),
+        int(round(clamp_float(rgba.blue, 0.0, 1.0, 0.0) * 255)),
+    )
+
+
+def hex_to_rgba(value, alpha=1.0, fallback=DEFAULT_CLOCK_FONT_COLOR):
+    red, green, blue = color_to_rgb(value, fallback)
+    rgba = Gdk.RGBA()
+    rgba.red = red
+    rgba.green = green
+    rgba.blue = blue
+    rgba.alpha = clamp_float(alpha, 0.0, 1.0, 1.0)
+    return rgba
 
 
 def refresh_interval_ms(fps):
@@ -490,10 +542,6 @@ def app_name_from_wm_class(wm_class):
 class LooseFixed(Gtk.Fixed):
     __gtype_name__ = "WinmirrorLooseFixed"
 
-    def do_draw(self, cr):
-        clear_background(cr)
-        return Gtk.Fixed.do_draw(self, cr)
-
     def do_get_preferred_width(self):
         return 1, 1
 
@@ -508,12 +556,29 @@ class LooseFixed(Gtk.Fixed):
 
 
 class ClockSlot(Gtk.DrawingArea):
-    def __init__(self, mode="date-time", font_size=DEFAULT_CLOCK_FONT_SIZE):
+    def __init__(
+        self,
+        mode="date-time",
+        font_size=DEFAULT_CLOCK_FONT_SIZE,
+        font_color=DEFAULT_CLOCK_FONT_COLOR,
+        show_weather=False,
+        show_precipitation=False,
+        weather_location="",
+    ):
         super().__init__()
         self.mode = normalize_clock_mode(mode)
         self.font_size = clamp(font_size, MIN_CLOCK_FONT_SIZE, MAX_CLOCK_FONT_SIZE, DEFAULT_CLOCK_FONT_SIZE)
+        self.font_color = normalize_hex_color(font_color, DEFAULT_CLOCK_FONT_COLOR)
+        self.show_weather = bool(show_weather)
+        self.show_precipitation = bool(show_precipitation)
+        self.weather_location = str(weather_location or "").strip()
+        self.weather_summary = None
+        self.precipitation_summary = None
+        self.weather_source_id = None
+        self.weather_fetching = False
         self.set_size_request(DEFAULT_TILE_WIDTH, DEFAULT_TILE_HEIGHT)
         self.connect("draw", self.on_draw)
+        self.update_weather_timer()
 
     def set_mode(self, mode):
         self.mode = normalize_clock_mode(mode)
@@ -523,15 +588,94 @@ class ClockSlot(Gtk.DrawingArea):
         self.font_size = clamp(font_size, MIN_CLOCK_FONT_SIZE, MAX_CLOCK_FONT_SIZE, DEFAULT_CLOCK_FONT_SIZE)
         self.queue_draw()
 
+    def set_font_color(self, font_color):
+        self.font_color = normalize_hex_color(font_color, DEFAULT_CLOCK_FONT_COLOR)
+        self.queue_draw()
+
+    def set_weather_options(self, show_weather=None, show_precipitation=None, weather_location=None):
+        if show_weather is not None:
+            self.show_weather = bool(show_weather)
+        if show_precipitation is not None:
+            self.show_precipitation = bool(show_precipitation)
+        if weather_location is not None:
+            self.weather_location = str(weather_location or "").strip()
+        self.update_weather_timer()
+        self.queue_draw()
+
+    def update_weather_timer(self):
+        enabled = self.show_weather or self.show_precipitation
+        if not enabled:
+            if self.weather_source_id is not None:
+                GLib.source_remove(self.weather_source_id)
+                self.weather_source_id = None
+            self.weather_summary = None
+            self.precipitation_summary = None
+            return
+        if self.weather_source_id is None:
+            self.weather_source_id = GLib.timeout_add_seconds(WEATHER_REFRESH_SECONDS, self.refresh_weather)
+        self.refresh_weather()
+
+    def stop_weather_timer(self):
+        if self.weather_source_id is not None:
+            GLib.source_remove(self.weather_source_id)
+            self.weather_source_id = None
+
+    def refresh_weather(self):
+        if not (self.show_weather or self.show_precipitation):
+            return False
+        if self.weather_fetching:
+            return True
+        self.weather_fetching = True
+        threading.Thread(target=self.fetch_weather, daemon=True).start()
+        return True
+
+    def fetch_weather(self):
+        summary = None
+        precipitation = None
+        try:
+            location = urllib.parse.quote(self.weather_location)
+            url = f"https://wttr.in/{location}?format=j1" if location else "https://wttr.in/?format=j1"
+            request = urllib.request.Request(url, headers={"User-Agent": "winmirror-launcher/0.1"})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            current = (data.get("current_condition") or [{}])[0]
+            temp = current.get("temp_C")
+            desc_items = current.get("weatherDesc") or []
+            desc = desc_items[0].get("value") if desc_items else ""
+            precip = current.get("precipMM")
+            if temp not in (None, ""):
+                summary = f"{temp}C {desc}".strip()
+            elif desc:
+                summary = desc
+            if precip not in (None, ""):
+                precipitation = f"Lluvia {precip} mm"
+        except (OSError, ValueError, KeyError, IndexError, TypeError):
+            summary = "Clima --"
+            precipitation = "Lluvia --"
+        GLib.idle_add(self.apply_weather_result, summary, precipitation)
+
+    def apply_weather_result(self, summary, precipitation):
+        self.weather_fetching = False
+        self.weather_summary = summary
+        self.precipitation_summary = precipitation
+        self.queue_draw()
+        return False
+
     def format_lines(self):
         now = GLib.DateTime.new_now_local()
         if self.mode == "time":
-            return [now.format("%H:%M")]
-        if self.mode == "time-seconds":
-            return [now.format("%H:%M:%S")]
-        if self.mode == "full":
-            return [now.format("%A"), now.format("%d/%m/%Y"), now.format("%H:%M:%S")]
-        return [now.format("%d/%m/%Y"), now.format("%H:%M")]
+            lines = [now.format("%H:%M")]
+        elif self.mode == "time-seconds":
+            lines = [now.format("%H:%M:%S")]
+        elif self.mode == "full":
+            lines = [now.format("%A"), now.format("%d/%m/%Y"), now.format("%H:%M:%S")]
+        else:
+            lines = [now.format("%d/%m/%Y"), now.format("%H:%M")]
+        if self.show_weather and self.weather_summary:
+            lines.append(self.weather_summary)
+        if self.show_precipitation and self.precipitation_summary:
+            lines.append(self.precipitation_summary)
+        return lines
 
     def on_draw(self, widget, cr):
         alloc = widget.get_allocation()
@@ -554,7 +698,7 @@ class ClockSlot(Gtk.DrawingArea):
             total_height += th
         total_height += max(0, len(lines) - 1) * 2
         y = max(2, (height - total_height) / 2.0)
-        cr.set_source_rgb(0.9, 0.92, 0.94)
+        cr.set_source_rgb(*color_to_rgb(self.font_color, DEFAULT_CLOCK_FONT_COLOR))
         for layout, th in layouts:
             tw, _th = layout.get_pixel_size()
             cr.move_to(max(5, (width - tw) / 2.0), y)
@@ -1342,6 +1486,14 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         center = width / 2.0
         return center - half_span <= x <= center + half_span
 
+    def close_icon_rect(self, width, height):
+        size = 18
+        if self.triangle_orientation == "up":
+            return (max(0, (width - size) / 2.0), 0, size, size)
+        if self.triangle_orientation == "down":
+            return (max(0, (width - size) / 2.0), max(0, height - size), size, size)
+        return (max(0, width - size), 0, size, size)
+
     def release_layout_size(self):
         self.layout_width = SHRINK_TILE_WIDTH
         self.layout_height = SHRINK_TILE_HEIGHT
@@ -1470,14 +1622,15 @@ class SimpleMirrorTile(Gtk.DrawingArea):
             self.panel.show_context_menu(event, self)
             return True
         alloc = self.get_allocation()
+        if self.show_close and int(event.button) == 1:
+            close_x, close_y, close_w, close_h = self.close_icon_rect(alloc.width, alloc.height)
+            if close_x <= event.x <= close_x + close_w and close_y <= event.y <= close_y + close_h:
+                self.close_window()
+                return True
         if not self.point_in_triangle(event.x, event.y, alloc.width, alloc.height):
             return False
         if self.panel is not None and self.panel.order_edit_mode and int(event.button) == 1:
             if self.handle_order_edit_click(event):
-                return True
-        if self.show_close and int(event.button) == 1:
-            if event.x >= alloc.width - 18 and event.y <= 18:
-                self.close_window()
                 return True
         if int(event.button) == 1:
             self.activate_window()
@@ -1599,13 +1752,14 @@ class SimpleMirrorTile(Gtk.DrawingArea):
 
         if self.show_close:
             cr.set_source_rgba(0.0, 0.0, 0.0, 0.65)
-            cr.rectangle(width - 18, 0, 18, 18)
+            close_x, close_y, close_w, close_h = self.close_icon_rect(width, height)
+            cr.rectangle(close_x, close_y, close_w, close_h)
             cr.fill()
             layout = widget.create_pango_layout("x")
             layout.set_font_description(Pango.FontDescription("Sans Bold 8"))
             tw, th = layout.get_pixel_size()
             cr.set_source_rgb(0.95, 0.95, 0.95)
-            cr.move_to(width - 9 - tw / 2.0, 9 - th / 2.0)
+            cr.move_to(close_x + (close_w - tw) / 2.0, close_y + (close_h - th) / 2.0)
             PangoCairo.show_layout(cr, layout)
 
         if self.show_title:
@@ -1613,6 +1767,7 @@ class SimpleMirrorTile(Gtk.DrawingArea):
             layout = widget.create_pango_layout(title)
             layout.set_font_description(Pango.FontDescription("Sans 8"))
             layout.set_ellipsize(Pango.EllipsizeMode.END)
+            layout.set_alignment(Pango.Alignment.CENTER)
             layout.set_width(max(1, width - 8) * Pango.SCALE)
             _tw, th = layout.get_pixel_size()
             cr.set_source_rgba(0.0, 0.0, 0.0, 0.68)
@@ -1715,6 +1870,12 @@ class SimpleLauncherPanel:
         show_clock=False,
         clock_mode="date-time",
         clock_font_size=DEFAULT_CLOCK_FONT_SIZE,
+        clock_font_color=DEFAULT_CLOCK_FONT_COLOR,
+        clock_show_weather=False,
+        clock_show_precipitation=False,
+        clock_weather_location="",
+        background_color=DEFAULT_BACKGROUND_COLOR,
+        background_alpha=DEFAULT_BACKGROUND_ALPHA,
         show_tint2=False,
         show_launchers=True,
         launcher_units=DEFAULT_LAUNCHER_SLOT_UNITS,
@@ -1753,7 +1914,13 @@ class SimpleLauncherPanel:
         self.show_clock = bool(show_clock)
         self.clock_mode = normalize_clock_mode(clock_mode)
         self.clock_font_size = clamp(clock_font_size, MIN_CLOCK_FONT_SIZE, MAX_CLOCK_FONT_SIZE, DEFAULT_CLOCK_FONT_SIZE)
+        self.clock_font_color = normalize_hex_color(clock_font_color, DEFAULT_CLOCK_FONT_COLOR)
+        self.clock_show_weather = bool(clock_show_weather)
+        self.clock_show_precipitation = bool(clock_show_precipitation)
+        self.clock_weather_location = str(clock_weather_location or "").strip()
         self.clock_source_id = None
+        self.background_color = normalize_hex_color(background_color, DEFAULT_BACKGROUND_COLOR)
+        self.background_alpha = clamp_float(background_alpha, 0.0, 1.0, DEFAULT_BACKGROUND_ALPHA)
         self.show_tint2 = bool(show_tint2)
         self.show_launchers = bool(show_launchers)
         self.launcher_units = normalize_tint2_units(launcher_units)
@@ -1819,7 +1986,14 @@ class SimpleLauncherPanel:
         self.filter_entry.connect("changed", self.on_filter_changed)
         self.filter_entry.connect("key-press-event", self.on_filter_key_press)
 
-        self.clock_slot = ClockSlot(self.clock_mode, self.clock_font_size)
+        self.clock_slot = ClockSlot(
+            self.clock_mode,
+            self.clock_font_size,
+            self.clock_font_color,
+            self.clock_show_weather,
+            self.clock_show_precipitation,
+            self.clock_weather_location,
+        )
         self.clock_slot.set_visible(self.show_clock)
         self.launcher_grid = LauncherGrid()
         self.launcher_grid.set_visible(self.show_launchers)
@@ -1871,6 +2045,11 @@ class SimpleLauncherPanel:
 
     def on_window_draw(self, _widget, cr):
         clear_background(cr)
+        if self.background_alpha > 0:
+            cr.set_source_rgba(*color_to_rgb(self.background_color, DEFAULT_BACKGROUND_COLOR), self.background_alpha)
+            alloc = self.win.get_allocation()
+            cr.rectangle(0, 0, max(1, alloc.width), max(1, alloc.height))
+            cr.fill()
         return False
 
     def apply_workspace_behavior(self):
@@ -1915,6 +2094,12 @@ class SimpleLauncherPanel:
                 "show_clock": self.show_clock,
                 "clock_mode": self.clock_mode,
                 "clock_font_size": self.clock_font_size,
+                "clock_font_color": self.clock_font_color,
+                "clock_show_weather": self.clock_show_weather,
+                "clock_show_precipitation": self.clock_show_precipitation,
+                "clock_weather_location": self.clock_weather_location,
+                "background_color": self.background_color,
+                "background_alpha": self.background_alpha,
                 "show_tint2": self.show_tint2,
                 "show_launchers": self.show_launchers,
                 "launcher_units": self.launcher_units,
@@ -2674,9 +2859,54 @@ class SimpleLauncherPanel:
             item = Gtk.MenuItem(label=f"Fuente {size}px")
             item.connect("activate", lambda _item, value=size: self.set_clock_font_size(value))
             clock_menu.append(item)
+        clock_menu.append(Gtk.SeparatorMenuItem())
+        color_item = Gtk.MenuItem(label="Color de fuente...")
+        color_item.connect("activate", lambda *_args: self.choose_clock_font_color())
+        clock_menu.append(color_item)
+        for label, color in (("Fuente clara", "#e6ebf0"), ("Fuente negra", "#000000"), ("Fuente cyan", "#00f5ff"), ("Fuente amarilla", "#ffd24a")):
+            item = Gtk.MenuItem(label=label)
+            item.connect("activate", lambda _item, value=color: self.set_clock_font_color(value))
+            clock_menu.append(item)
+        clock_menu.append(Gtk.SeparatorMenuItem())
+        self.add_check_item(clock_menu, "Mostrar clima", self.clock_show_weather, lambda active: self.set_clock_weather_options(show_weather=active))
+        self.add_check_item(
+            clock_menu,
+            "Mostrar precipitacion",
+            self.clock_show_precipitation,
+            lambda active: self.set_clock_weather_options(show_precipitation=active),
+        )
+        weather_location_item = Gtk.MenuItem(label="Ubicacion de clima...")
+        weather_location_item.connect("activate", lambda *_args: self.choose_weather_location())
+        clock_menu.append(weather_location_item)
         clock_item = Gtk.MenuItem(label="Hora y fecha")
         clock_item.set_submenu(clock_menu)
         menu.append(clock_item)
+
+        background_menu = Gtk.Menu()
+        background_color_item = Gtk.MenuItem(label="Color de fondo...")
+        background_color_item.connect("activate", lambda *_args: self.choose_background_color())
+        background_menu.append(background_color_item)
+        for label, color in (("Fondo negro", "#000000"), ("Fondo blanco", "#ffffff"), ("Fondo gris", "#202020")):
+            item = Gtk.MenuItem(label=label)
+            item.connect("activate", lambda _item, value=color: self.set_background_color(value))
+            background_menu.append(item)
+        background_menu.append(Gtk.SeparatorMenuItem())
+        for label, alpha in (
+            ("Transparencia 100%", 0.0),
+            ("Transparencia 75%", 0.25),
+            ("Transparencia 50%", 0.5),
+            ("Transparencia 25%", 0.75),
+            ("Opaco", 1.0),
+        ):
+            item = Gtk.MenuItem(label=label)
+            item.connect("activate", lambda _item, value=alpha: self.set_background_alpha(value))
+            background_menu.append(item)
+        reset_background_item = Gtk.MenuItem(label="Fondo transparente por default")
+        reset_background_item.connect("activate", lambda *_args: self.set_background_rgba(DEFAULT_BACKGROUND_COLOR, DEFAULT_BACKGROUND_ALPHA))
+        background_menu.append(reset_background_item)
+        background_item = Gtk.MenuItem(label="Fondo")
+        background_item.set_submenu(background_menu)
+        menu.append(background_item)
 
         terminal_menu = Gtk.Menu()
         add_terminal_item = Gtk.MenuItem(label="Agregar mini terminal")
@@ -2922,6 +3152,81 @@ class SimpleLauncherPanel:
 
     def adjust_clock_font_size(self, delta):
         self.set_clock_font_size(self.clock_font_size + int(delta))
+
+    def set_clock_font_color(self, color):
+        self.clock_font_color = normalize_hex_color(color, DEFAULT_CLOCK_FONT_COLOR)
+        self.clock_slot.set_font_color(self.clock_font_color)
+        self.save_state()
+
+    def choose_clock_font_color(self):
+        self.choose_color(
+            "Color de fuente del reloj",
+            self.clock_font_color,
+            1.0,
+            False,
+            lambda color, _alpha: self.set_clock_font_color(color),
+        )
+
+    def set_clock_weather_options(self, show_weather=None, show_precipitation=None, weather_location=None):
+        if show_weather is not None:
+            self.clock_show_weather = bool(show_weather)
+        if show_precipitation is not None:
+            self.clock_show_precipitation = bool(show_precipitation)
+        if weather_location is not None:
+            self.clock_weather_location = str(weather_location or "").strip()
+        self.clock_slot.set_weather_options(
+            self.clock_show_weather,
+            self.clock_show_precipitation,
+            self.clock_weather_location,
+        )
+        self.fit_tiles_to_window()
+        self.save_state()
+
+    def choose_weather_location(self):
+        dialog = Gtk.Dialog(title="Ubicacion de clima", transient_for=self.win, flags=0)
+        dialog.add_button("Cancelar", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Guardar", Gtk.ResponseType.OK)
+        box = dialog.get_content_area()
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("Auto por IP, o ciudad")
+        entry.set_text(self.clock_weather_location)
+        box.pack_start(entry, False, False, 8)
+        dialog.show_all()
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            self.set_clock_weather_options(weather_location=entry.get_text())
+        dialog.destroy()
+
+    def set_background_color(self, color):
+        self.set_background_rgba(color, self.background_alpha)
+
+    def set_background_alpha(self, alpha):
+        self.set_background_rgba(self.background_color, alpha)
+
+    def set_background_rgba(self, color, alpha):
+        self.background_color = normalize_hex_color(color, DEFAULT_BACKGROUND_COLOR)
+        self.background_alpha = clamp_float(alpha, 0.0, 1.0, DEFAULT_BACKGROUND_ALPHA)
+        self.win.queue_draw()
+        self.save_state()
+
+    def choose_background_color(self):
+        self.choose_color(
+            "Color y transparencia de fondo",
+            self.background_color,
+            self.background_alpha,
+            True,
+            self.set_background_rgba,
+        )
+
+    def choose_color(self, title, color, alpha, use_alpha, callback):
+        dialog = Gtk.ColorChooserDialog(title=title, transient_for=self.win)
+        dialog.set_use_alpha(bool(use_alpha))
+        dialog.set_rgba(hex_to_rgba(color, alpha, DEFAULT_BACKGROUND_COLOR if use_alpha else DEFAULT_CLOCK_FONT_COLOR))
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            rgba = dialog.get_rgba()
+            callback(rgba_to_hex(rgba), clamp_float(rgba.alpha, 0.0, 1.0, alpha))
+        dialog.destroy()
 
     def set_show_tint2(self, active):
         self.show_tint2 = bool(active)
@@ -3253,6 +3558,7 @@ class SimpleLauncherPanel:
         if self.clock_source_id is not None:
             GLib.source_remove(self.clock_source_id)
             self.clock_source_id = None
+        self.clock_slot.stop_weather_timer()
         self.save_state()
         self.tint2_slot.stop()
         if Gtk.main_level() > 0:
