@@ -1,6 +1,7 @@
 import gi
 import math
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -1034,18 +1035,59 @@ class Tint2Slot(Gtk.Box):
         if not self.uses_split_chema_tint2():
             return {"combined": (int(x), int(y), width, height)}
         if self.orientation == "vertical":
-            tray_height = max(1, min(max(height // 3, width * 5), max(1, height - 1)))
+            tray_height = max(1, min(max(width * 3, 160), max(1, height - 1)))
             launcher_height = max(1, height - tray_height)
             return {
                 "tray": (int(x), int(y), width, tray_height),
                 "launchers": (int(x), int(y) + tray_height, width, launcher_height),
             }
-        tray_width = max(1, min(max(width // 3, height * 6), max(1, width - 1)))
+        tray_width = max(1, min(max(height * 3, 160), max(1, width - 1)))
         launcher_width = max(1, width - tray_width)
         return {
             "tray": (int(x), int(y), tray_width, height),
             "launchers": (int(x) + tray_width, int(y), launcher_width, height),
         }
+
+    def measure_tray_content_extent(self, window_id):
+        proc = subprocess.run(["xwininfo", "-tree", "-id", window_id], text=True, capture_output=True, check=False)
+        if proc.returncode != 0:
+            return None
+        max_x = 0
+        max_y = 0
+        for line in proc.stdout.splitlines():
+            match = re.search(r"\s(\d+)x(\d+)\+(-?\d+)\+(-?\d+)\s", line)
+            if match is None:
+                continue
+            child_width, child_height, child_x, child_y = (int(value) for value in match.groups())
+            if child_width <= 1 or child_height <= 1 or child_x < 0 or child_y < 0:
+                continue
+            if child_width > 64 or child_height > 64:
+                continue
+            max_x = max(max_x, child_x + child_width)
+            max_y = max(max_y, child_y + child_height)
+        if max_x <= 0 or max_y <= 0:
+            return None
+        return max_x + 2, max_y + 2
+
+    def tighten_split_tray_rect(self, window_id):
+        if not self.uses_split_chema_tint2() or self.target_rect is None:
+            return
+        extent = self.measure_tray_content_extent(window_id)
+        if extent is None:
+            return
+        x, y, width, height = self.target_rect
+        if self.orientation == "vertical":
+            tray_height = max(1, min(extent[1], max(1, height - 1)))
+            if abs(tray_height - self.target_rects.get("tray", (0, 0, 0, 0))[3]) <= 3:
+                return
+            self.target_rects["tray"] = (x, y, width, tray_height)
+            self.target_rects["launchers"] = (x, y + tray_height, width, max(1, height - tray_height))
+            return
+        tray_width = max(1, min(extent[0], max(1, width - 1)))
+        if abs(tray_width - self.target_rects.get("tray", (0, 0, 0, 0))[2]) <= 3:
+            return
+        self.target_rects["tray"] = (x, y, tray_width, height)
+        self.target_rects["launchers"] = (x + tray_width, y, max(1, width - tray_width), height)
 
     def set_target_rect(self, x, y, width, height):
         width = max(1, int(width))
@@ -1100,6 +1142,11 @@ class Tint2Slot(Gtk.Box):
             if window_id is None:
                 missing_window = True
                 continue
+            if role == "tray":
+                self.tighten_split_tray_rect(window_id)
+                target_rect = self.target_rects.get(role)
+                if target_rect is None:
+                    continue
             x, y, width, height = target_rect
             subprocess.run(
                 ["wmctrl", "-ir", window_id, "-b", "add,skip_taskbar,skip_pager"],
