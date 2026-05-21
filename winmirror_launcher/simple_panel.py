@@ -746,6 +746,9 @@ class Tint2Slot(Gtk.Box):
         self.launcher_grid.set_visible(use_grid)
         self.label.set_visible(not use_grid)
 
+    def uses_external_tint2(self):
+        return not self.uses_launcher_grid()
+
     def set_profile(self, profile):
         self.profile = normalize_tint2_profile(profile)
         self.update_child_visibility()
@@ -766,6 +769,10 @@ class Tint2Slot(Gtk.Box):
         self.restart()
 
     def start(self):
+        self.update_child_visibility()
+        if not self.uses_external_tint2():
+            self.stop()
+            return
         if self.process is not None and self.process.poll() is None:
             return
         if subprocess.run(["/bin/sh", "-lc", "command -v tint2"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
@@ -842,8 +849,6 @@ class Tint2Slot(Gtk.Box):
         with handle:
             width = self.target_rect[2] if self.target_rect else DEFAULT_TILE_WIDTH * DEFAULT_TINT2_SLOT_UNITS
             height = self.target_rect[3] if self.target_rect else DEFAULT_TILE_HEIGHT
-            if self.uses_launcher_grid():
-                height = max(18, min(height, max(18, int(round(height * 0.36)))))
             self.config_size = (width, height)
             self.config_orientation = self.orientation
             placement = self.owner.tint2_placement if self.owner is not None else DEFAULT_TINT2_PLACEMENT
@@ -904,9 +909,11 @@ class Tint2Slot(Gtk.Box):
         width = max(1, int(width))
         height = max(1, int(height))
         if self.uses_launcher_grid():
-            tint_height = max(18, min(height, max(18, int(round(height * 0.36)))))
-            self.launcher_grid.set_layout_size(width, max(1, height - tint_height))
-            self.target_rect = (int(x), int(y + height - tint_height), width, tint_height)
+            self.launcher_grid.set_layout_size(width, height)
+            self.target_rect = None
+            if self.process is not None or self.config_path is not None:
+                self.stop()
+            return
         else:
             self.target_rect = (int(x), int(y), width, height)
         if (
