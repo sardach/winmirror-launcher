@@ -15,6 +15,7 @@ from .simple_panel import (
     DEFAULT_TILE_HEIGHT,
     DEFAULT_TILE_WIDTH,
     DEFAULT_LAUNCHER_SLOT_UNITS,
+    DEFAULT_CLOCK_FONT_SIZE,
     DEFAULT_TINT2_PLACEMENT,
     DEFAULT_TINT2_SLOT_UNITS,
     MAX_TINT2_SLOT_UNITS,
@@ -342,6 +343,7 @@ def main(argv=None):
                 else simple_state.get("frame_interval_seconds")
             ),
             title=args.title,
+            window_decorated=simple_state.get("window_decorated", False),
             show_title=args.show_title if args.show_title is not None else simple_state.get("show_title", False),
             show_close=args.show_close if args.show_close is not None else simple_state.get("show_close", False),
             show_workspace=(
@@ -364,6 +366,7 @@ def main(argv=None):
             excluded_window_ids=args.exclude_window,
             show_clock=simple_state.get("show_clock", False),
             clock_mode=simple_state.get("clock_mode", "date-time"),
+            clock_font_size=simple_state.get("clock_font_size", DEFAULT_CLOCK_FONT_SIZE),
             show_launchers=simple_state.get("show_launchers", True),
             launcher_units=simple_state.get("launcher_units", DEFAULT_LAUNCHER_SLOT_UNITS),
             show_tint2=args.show_tint2 if args.show_tint2 is not None else simple_state.get("show_tint2", False),
