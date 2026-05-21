@@ -1071,23 +1071,24 @@ class Tint2Slot(Gtk.Box):
 
     def tighten_split_tray_rect(self, window_id):
         if not self.uses_split_chema_tint2() or self.target_rect is None:
-            return
+            return False
         extent = self.measure_tray_content_extent(window_id)
         if extent is None:
-            return
+            return False
         x, y, width, height = self.target_rect
         if self.orientation == "vertical":
             tray_height = max(1, min(extent[1], max(1, height - 1)))
             if abs(tray_height - self.target_rects.get("tray", (0, 0, 0, 0))[3]) <= 3:
-                return
+                return False
             self.target_rects["tray"] = (x, y, width, tray_height)
             self.target_rects["launchers"] = (x, y + tray_height, width, max(1, height - tray_height))
-            return
+            return True
         tray_width = max(1, min(extent[0], max(1, width - 1)))
         if abs(tray_width - self.target_rects.get("tray", (0, 0, 0, 0))[2]) <= 3:
-            return
+            return False
         self.target_rects["tray"] = (x, y, tray_width, height)
         self.target_rects["launchers"] = (x + tray_width, y, max(1, width - tray_width), height)
+        return True
 
     def set_target_rect(self, x, y, width, height):
         width = max(1, int(width))
@@ -1143,7 +1144,8 @@ class Tint2Slot(Gtk.Box):
                 missing_window = True
                 continue
             if role == "tray":
-                self.tighten_split_tray_rect(window_id)
+                if self.tighten_split_tray_rect(window_id):
+                    missing_window = True
                 target_rect = self.target_rects.get(role)
                 if target_rect is None:
                     continue
