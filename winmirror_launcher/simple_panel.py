@@ -613,6 +613,8 @@ class LauncherGrid(Gtk.DrawingArea):
                 continue
             name = desktop_entry_value(path, "Name") or path.stem
             icon = desktop_entry_value(path, "Icon")
+            if is_start_launcher(line) and Path("/home/chema/Descargas/kris.jpg").exists():
+                icon = "/home/chema/Descargas/kris.jpg"
             command = desktop_entry_value(path, "Exec")
             if command:
                 items.append({"path": path, "name": name, "icon": icon, "command": command})
@@ -682,10 +684,12 @@ class LauncherGrid(Gtk.DrawingArea):
         try:
             icon_path = Path(os.path.expanduser(icon_name))
             if icon_path.exists():
-                pixbuf = Gdk.pixbuf_new_from_file_at_scale(str(icon_path), size, size, True)
+                pixbuf = Gdk.pixbuf_new_from_file_at_scale(str(icon_path), size, size, False)
             else:
                 theme = Gtk.IconTheme.get_default()
                 pixbuf = theme.load_icon(icon_name, size, 0)
+            if pixbuf is not None and (pixbuf.get_width() != size or pixbuf.get_height() != size):
+                pixbuf = pixbuf.scale_simple(size, size, Gdk.InterpType.BILINEAR)
         except Exception:
             pixbuf = None
         self.icon_cache[key] = pixbuf
@@ -747,7 +751,7 @@ class Tint2Slot(Gtk.Box):
         self.label.set_visible(not use_grid)
 
     def uses_external_tint2(self):
-        return not self.uses_launcher_grid()
+        return True
 
     def set_profile(self, profile):
         self.profile = normalize_tint2_profile(profile)
@@ -909,11 +913,9 @@ class Tint2Slot(Gtk.Box):
         width = max(1, int(width))
         height = max(1, int(height))
         if self.uses_launcher_grid():
-            self.launcher_grid.set_layout_size(width, height)
-            self.target_rect = None
-            if self.process is not None or self.config_path is not None:
-                self.stop()
-            return
+            tint_height = max(18, min(height, max(18, int(round(height * 0.32)))))
+            self.launcher_grid.set_layout_size(width, max(1, height - tint_height))
+            self.target_rect = (int(x), int(y + height - tint_height), width, tint_height)
         else:
             self.target_rect = (int(x), int(y), width, height)
         if (
