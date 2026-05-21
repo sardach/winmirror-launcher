@@ -33,9 +33,11 @@ LABEL_MODES = {"title", "app"}
 IDLE_MODES = {"off", "collapse", "hide"}
 CLOCK_MODES = {"time", "time-seconds", "date-time", "full"}
 TINT2_PROFILES = {"default", "chema-compact"}
+TINT2_PLACEMENTS = {"cell", "top", "bottom", "left", "right"}
 MIN_TINT2_SLOT_UNITS = 1
 MAX_TINT2_SLOT_UNITS = 8
 DEFAULT_TINT2_SLOT_UNITS = 3
+DEFAULT_TINT2_PLACEMENT = "cell"
 HOVER_MODES = {
     "off": 1.0,
     "soft": 1.08,
@@ -112,6 +114,10 @@ def normalize_tint2_units(value):
     return clamp(value, MIN_TINT2_SLOT_UNITS, MAX_TINT2_SLOT_UNITS, DEFAULT_TINT2_SLOT_UNITS)
 
 
+def normalize_tint2_placement(value):
+    return value if value in TINT2_PLACEMENTS else DEFAULT_TINT2_PLACEMENT
+
+
 def read_current_tint2_launchers():
     candidates = [
         Path.home() / ".config" / "tint2" / "tint2-sessionfile",
@@ -169,13 +175,66 @@ def standard_tint2_launchers():
     ]
 
 
-def build_tint2_config(profile, width=240, height=48):
+def current_tint2_config_path():
+    candidates = [
+        Path.home() / ".config" / "tint2" / "micro95_top.tint2rc",
+        Path.home() / ".config" / "tint2" / "tint2-sessionfile",
+        Path.home() / ".config" / "tint2" / "tint2rc",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
+
+
+def read_current_tint2_plugin_blocks(kind):
+    path = current_tint2_config_path()
+    if path is None:
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    marker = f"{kind} = new"
+    starts = [index for index, line in enumerate(lines) if line.strip() == marker]
+    blocks = []
+    for start in starts:
+        block = []
+        for line in lines[start:]:
+            stripped = line.strip()
+            if block and (stripped == marker or stripped.startswith("#---")):
+                break
+            block.append(line)
+        blocks.append("\n".join(block).strip())
+    return blocks
+
+
+def read_current_tint2_option_block(prefixes):
+    path = current_tint2_config_path()
+    if path is None:
+        return ""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    output = []
+    for line in lines:
+        stripped = line.strip()
+        if any(stripped.startswith(prefix) for prefix in prefixes):
+            output.append(line)
+    return "\n".join(output)
+
+
+def build_tint2_config(profile, width=240, height=48, orientation="horizontal", placement="cell"):
     profile = normalize_tint2_profile(profile)
+    orientation = "vertical" if orientation == "vertical" else "horizontal"
+    placement = normalize_tint2_placement(placement)
     launcher_lines = standard_tint2_launchers()
     panel_items = "LTS" if launcher_lines else "TS"
     width = max(48, int(width or 240))
     height = max(18, int(height or 48))
-    icon_size = max(12, min(22, height - 6))
+    icon_edge = width if orientation == "vertical" else height
+    icon_size = max(12, min(22, icon_edge - 6))
     taskbar_lines = [
         "taskbar_mode = multi_desktop",
         "taskbar_hide_if_empty = 0",
@@ -184,11 +243,29 @@ def build_tint2_config(profile, width=240, height=48):
         f"task_maximum_size = {icon_size + 2} {icon_size + 2}",
         "task_padding = 1 1 1",
     ]
+    plugin_blocks = []
+    option_blocks = []
     if profile == "chema-compact":
-        for line in read_current_tint2_launchers():
-            if line not in launcher_lines:
-                launcher_lines.append(line)
-        panel_items = "LS" if launcher_lines else "TS"
+        button_blocks = read_current_tint2_plugin_blocks("button")
+        execp_blocks = read_current_tint2_plugin_blocks("execp")
+        battery_block = read_current_tint2_option_block(("battery_", "bat1_", "bat2_", "ac_"))
+        clock_block = read_current_tint2_option_block(("time1_", "time2_", "clock_"))
+        cell_mode = placement == "cell"
+        if cell_mode:
+            plugin_blocks.extend(button_blocks[:3])
+            plugin_blocks.extend(execp_blocks[:1])
+            option_blocks.extend(block for block in (battery_block, clock_block) if block)
+            launcher_lines = []
+            panel_items = "PPEPSBC"
+        else:
+            plugin_blocks.extend(button_blocks)
+            plugin_blocks.extend(execp_blocks)
+            option_blocks.extend(block for block in (battery_block, clock_block) if block)
+            panel_items = "PPPPPPLFEPSBECPP" if button_blocks or execp_blocks else "LSBC"
+        if not cell_mode:
+            for line in read_current_tint2_launchers():
+                if line not in launcher_lines:
+                    launcher_lines.append(line)
         taskbar_lines = [
             "taskbar_mode = multi_desktop",
             "taskbar_hide_if_empty = 1",
@@ -202,6 +279,12 @@ def build_tint2_config(profile, width=240, height=48):
     if launcher_block:
         launcher_block += "\n"
     taskbar_block = "\n".join(taskbar_lines)
+    plugin_block = "\n\n".join(block for block in plugin_blocks if block)
+    option_block = "\n\n".join(block for block in option_blocks if block)
+    if plugin_block:
+        plugin_block += "\n"
+    if option_block:
+        option_block += "\n"
 
     return f"""# Generated by winmirror-launcher. Edit your main tint2 panel, not this temp file.
 rounded = 0
@@ -215,7 +298,7 @@ background_color = #20242a 100
 border_color = #404852 100
 
 panel_monitor = primary
-panel_position = top left horizontal
+panel_position = top left {orientation}
 panel_size = {width} {height}
 panel_margin = 0 0
 panel_padding = 0 0 0
@@ -259,6 +342,7 @@ systray_icon_asb = 100 0 0
 systray_monitor = 1
 systray_name_filter =
 
+{option_block}{plugin_block}
 tooltip = 0
 """
 
@@ -423,8 +507,9 @@ class CommandRunnerSlot(Gtk.Box):
 
 
 class Tint2Slot(Gtk.Box):
-    def __init__(self, profile="default", take_systray=False):
+    def __init__(self, profile="default", take_systray=False, owner=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.owner = owner
         self.profile = normalize_tint2_profile(profile)
         self.take_systray = bool(take_systray)
         self.process = None
@@ -432,6 +517,8 @@ class Tint2Slot(Gtk.Box):
         self.move_source_id = None
         self.target_rect = None
         self.config_size = None
+        self.orientation = "horizontal"
+        self.config_orientation = None
         self.window_id = None
         self.suspended_tint2_commands = []
         self.set_size_request(DEFAULT_TILE_WIDTH * DEFAULT_TINT2_SLOT_UNITS, DEFAULT_TILE_HEIGHT)
@@ -450,6 +537,13 @@ class Tint2Slot(Gtk.Box):
         if self.take_systray == active:
             return
         self.take_systray = active
+        self.restart()
+
+    def set_orientation(self, orientation):
+        orientation = "vertical" if orientation == "vertical" else "horizontal"
+        if self.orientation == orientation:
+            return
+        self.orientation = orientation
         self.restart()
 
     def start(self):
@@ -529,7 +623,9 @@ class Tint2Slot(Gtk.Box):
             width = self.target_rect[2] if self.target_rect else DEFAULT_TILE_WIDTH * DEFAULT_TINT2_SLOT_UNITS
             height = self.target_rect[3] if self.target_rect else DEFAULT_TILE_HEIGHT
             self.config_size = (width, height)
-            handle.write(build_tint2_config(self.profile, width, height))
+            self.config_orientation = self.orientation
+            placement = self.owner.tint2_placement if self.owner is not None else DEFAULT_TINT2_PLACEMENT
+            handle.write(build_tint2_config(self.profile, width, height, self.orientation, placement))
 
     def restart(self):
         was_running = self.process is not None and self.process.poll() is None
@@ -538,6 +634,7 @@ class Tint2Slot(Gtk.Box):
             self.start()
 
     def stop(self):
+        config_path = str(self.config_path) if self.config_path is not None else None
         if self.move_source_id is not None:
             GLib.source_remove(self.move_source_id)
             self.move_source_id = None
@@ -547,6 +644,8 @@ class Tint2Slot(Gtk.Box):
                 self.process.wait(timeout=1.0)
             except subprocess.TimeoutExpired:
                 self.process.kill()
+        if config_path:
+            self.kill_tint2_processes_for_config(config_path)
         self.process = None
         self.window_id = None
         if self.config_path is not None:
@@ -556,7 +655,28 @@ class Tint2Slot(Gtk.Box):
                 pass
             self.config_path = None
         self.config_size = None
+        self.config_orientation = None
         self.restore_external_tint2_panels()
+
+    def kill_tint2_processes_for_config(self, config_path):
+        proc = subprocess.run(["pgrep", "-af", "tint2"], text=True, capture_output=True, check=False)
+        if proc.returncode not in {0, 1}:
+            return
+        for line in proc.stdout.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            command = parts[1]
+            if config_path not in command:
+                continue
+            try:
+                os.kill(pid, 15)
+            except OSError:
+                pass
 
     def set_target_rect(self, x, y, width, height):
         width = max(1, int(width))
@@ -566,7 +686,11 @@ class Tint2Slot(Gtk.Box):
             self.process is not None
             and self.process.poll() is None
             and self.config_size is not None
-            and (abs(self.config_size[0] - width) > 2 or abs(self.config_size[1] - height) > 2)
+            and (
+                abs(self.config_size[0] - width) > 2
+                or abs(self.config_size[1] - height) > 2
+                or self.config_orientation != self.orientation
+            )
         ):
             self.restart()
             return
@@ -1057,6 +1181,7 @@ class SimpleLauncherPanel:
         show_tint2=False,
         tint2_profile="default",
         tint2_units=DEFAULT_TINT2_SLOT_UNITS,
+        tint2_placement=DEFAULT_TINT2_PLACEMENT,
         registry=None,
     ):
         self.registry = registry or WindowRegistry()
@@ -1085,6 +1210,7 @@ class SimpleLauncherPanel:
         self.show_tint2 = bool(show_tint2)
         self.tint2_profile = normalize_tint2_profile(tint2_profile)
         self.tint2_units = normalize_tint2_units(tint2_units)
+        self.tint2_placement = normalize_tint2_placement(tint2_placement)
         self.window_refresh_source_id = None
         self.active_window_source_id = None
         self.idle_source_id = None
@@ -1137,8 +1263,8 @@ class SimpleLauncherPanel:
 
         self.clock_slot = ClockSlot(self.clock_mode)
         self.clock_slot.set_visible(self.show_clock)
-        self.tint2_slot = Tint2Slot(self.tint2_profile)
-        self.tint2_slot.set_visible(self.show_tint2)
+        self.tint2_slot = Tint2Slot(self.tint2_profile, owner=self)
+        self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
         self.terminal_slots = []
         self.executor_slots = []
 
@@ -1151,7 +1277,7 @@ class SimpleLauncherPanel:
 
         self.win.show_all()
         self.clock_slot.set_visible(self.show_clock)
-        self.tint2_slot.set_visible(self.show_tint2)
+        self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
         if self.show_tint2:
             self.tint2_slot.start()
         self.capture_own_window_id()
@@ -1197,9 +1323,12 @@ class SimpleLauncherPanel:
         slots.extend(self.executor_slots)
         if self.show_clock:
             slots.append(self.clock_slot)
-        if self.show_tint2:
+        if self.show_tint2 and self.tint2_in_cell():
             slots.append(self.tint2_slot)
         return slots
+
+    def tint2_in_cell(self):
+        return self.tint2_placement == "cell"
 
     def layout_slot_count(self):
         return sum(units for _widget, units in self.layout_entries())
@@ -1294,7 +1423,37 @@ class SimpleLauncherPanel:
             return
         origin = gdk_window.get_origin()
         origin_x, origin_y = origin[-2], origin[-1]
+        self.tint2_slot.set_orientation("horizontal")
         self.tint2_slot.set_target_rect(origin_x + x, origin_y + y, width, height)
+
+    def update_detached_tint2_target(self):
+        if not self.show_tint2 or self.tint2_in_cell():
+            return
+        gdk_window = self.win.get_window()
+        if gdk_window is None:
+            return
+        origin = gdk_window.get_origin()
+        origin_x, origin_y = origin[-2], origin[-1]
+        alloc = self.win.get_allocation()
+        panel_width = max(1, int(alloc.width))
+        panel_height = max(1, int(alloc.height))
+        placement = self.tint2_placement
+        if placement in {"top", "bottom"}:
+            thickness = max(MIN_TILE_HEIGHT, min(MAX_TILE_HEIGHT, int(self.tile_height)))
+            x = origin_x
+            y = origin_y - thickness if placement == "top" else origin_y + panel_height
+            width = panel_width
+            height = thickness
+            orientation = "horizontal"
+        else:
+            thickness = max(MIN_TILE_WIDTH, min(MAX_TILE_WIDTH, int(self.tile_height)))
+            x = origin_x - thickness if placement == "left" else origin_x + panel_width
+            y = origin_y
+            width = thickness
+            height = panel_height
+            orientation = "vertical"
+        self.tint2_slot.set_orientation(orientation)
+        self.tint2_slot.set_target_rect(x, y, width, height)
 
     def position_filter_entry(self, index=None, columns=None, column_offsets=None, column_widths=None):
         columns = max(1, int(columns or self.current_columns or self.layout_slot_count()))
@@ -1479,8 +1638,9 @@ class SimpleLauncherPanel:
         for slot in self.utility_slots():
             slot.set_visible(True)
         self.clock_slot.set_visible(self.show_clock)
-        self.tint2_slot.set_visible(self.show_tint2)
+        self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
         self.position_layout_entries(entries, columns)
+        self.update_detached_tint2_target()
         self.grid.queue_resize()
         self.win.queue_resize()
 
@@ -1629,8 +1789,9 @@ class SimpleLauncherPanel:
 
         if self.hovered_tile not in visible_tiles or self.hover_scale <= 1.0:
             self.clock_slot.set_visible(self.show_clock)
-            self.tint2_slot.set_visible(self.show_tint2)
+            self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
             self.position_layout_entries(entries, columns)
+            self.update_detached_tint2_target()
             self.grid.queue_resize()
             return
 
@@ -1644,8 +1805,9 @@ class SimpleLauncherPanel:
             column_offsets.append(column_offsets[-1] + width)
 
         self.clock_slot.set_visible(self.show_clock)
-        self.tint2_slot.set_visible(self.show_tint2)
+        self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
         self.position_layout_entries(entries, columns, column_offsets, column_widths)
+        self.update_detached_tint2_target()
         self.grid.queue_resize()
 
     def distribute_pixels(self, total, weights):
@@ -1774,6 +1936,21 @@ class SimpleLauncherPanel:
                 tint2_group = item
             item.set_active(self.tint2_profile == profile)
             item.connect("toggled", lambda check, value=profile: check.get_active() and self.set_tint2_profile(value))
+            tint2_menu.append(item)
+        tint2_menu.append(Gtk.SeparatorMenuItem())
+        placement_group = None
+        for label, placement in (
+            ("Como celda", "cell"),
+            ("Barra arriba", "top"),
+            ("Barra abajo", "bottom"),
+            ("Barra izquierda", "left"),
+            ("Barra derecha", "right"),
+        ):
+            item = Gtk.RadioMenuItem.new_with_label_from_widget(placement_group, label)
+            if placement_group is None:
+                placement_group = item
+            item.set_active(self.tint2_placement == placement)
+            item.connect("toggled", lambda check, value=placement: check.get_active() and self.set_tint2_placement(value))
             tint2_menu.append(item)
         tint2_menu.append(Gtk.SeparatorMenuItem())
         units_group = None
@@ -1961,7 +2138,7 @@ class SimpleLauncherPanel:
 
     def set_show_tint2(self, active):
         self.show_tint2 = bool(active)
-        self.tint2_slot.set_visible(self.show_tint2)
+        self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
         if self.show_tint2:
             self.tint2_slot.start()
         else:
@@ -1979,6 +2156,14 @@ class SimpleLauncherPanel:
 
     def set_tint2_units(self, units):
         self.tint2_units = normalize_tint2_units(units)
+        self.current_columns = 0
+        self.current_rows = 0
+        self.fit_tiles_to_window()
+
+    def set_tint2_placement(self, placement):
+        self.tint2_placement = normalize_tint2_placement(placement)
+        self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
+        self.tint2_slot.restart()
         self.current_columns = 0
         self.current_rows = 0
         self.fit_tiles_to_window()
@@ -2231,6 +2416,7 @@ class SimpleLauncherPanel:
 
     def on_configure_event(self, *_args):
         self.fit_tiles_to_window()
+        self.update_detached_tint2_target()
         for tile in self.tiles:
             tile.queue_draw()
         return False

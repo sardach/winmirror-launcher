@@ -14,9 +14,11 @@ from .persistence import StateStore
 from .simple_panel import (
     DEFAULT_TILE_HEIGHT,
     DEFAULT_TILE_WIDTH,
+    DEFAULT_TINT2_PLACEMENT,
     DEFAULT_TINT2_SLOT_UNITS,
     MAX_TINT2_SLOT_UNITS,
     MIN_TINT2_SLOT_UNITS,
+    TINT2_PLACEMENTS,
     TINT2_PROFILES,
     SimpleLauncherPanel,
 )
@@ -256,6 +258,12 @@ def build_parser():
             f"({MIN_TINT2_SLOT_UNITS}-{MAX_TINT2_SLOT_UNITS}, default: {DEFAULT_TINT2_SLOT_UNITS})"
         ),
     )
+    parser.add_argument(
+        "--tint2-placement",
+        choices=sorted(TINT2_PLACEMENTS),
+        default=DEFAULT_TINT2_PLACEMENT,
+        help="Ubicacion de tint2: celda interna o barra adosada al panel",
+    )
     return parser
 
 
@@ -327,6 +335,7 @@ def main(argv=None):
             show_tint2=args.show_tint2,
             tint2_profile=args.tint2_profile,
             tint2_units=args.tint2_units,
+            tint2_placement=args.tint2_placement,
             registry=registry,
         )
         Gtk.main()

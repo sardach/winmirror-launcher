@@ -120,20 +120,22 @@ Cuando esta activo sin tint2, el reloj se coloca justo antes del buscador. Si ti
 
 ## Tint2 Integrado
 
-La opcion `Tint2` permite activar una celda de ancho configurable pensada para contener un panel `tint2` compacto. Por defecto ocupa 3 espacios del panel. La barra genera un archivo temporal de configuracion con el tamano exacto de la celda, lanza `tint2` con ese perfil y recoloca su ventana dentro del rectangulo reservado.
+La opcion `Tint2` permite activar una celda de ancho configurable o una barra adosada al panel. Por defecto funciona como celda interna y ocupa 3 espacios del panel. La barra genera un archivo temporal de configuracion con el tamano exacto, lanza `tint2` con ese perfil y recoloca su ventana dentro del rectangulo reservado.
 
 Perfiles disponibles:
 
 - `default`: configuracion generica con menu de aplicaciones si esta disponible, mostrar escritorio, `gmrun`, taskbar compacta y bandeja del sistema.
-- `chema-compact`: configuracion compacta con menu de aplicaciones, mostrar escritorio, `gmrun`, bandeja del sistema y los `launcher_item_app` del tint2 actual en `~/.config/tint2/tint2-sessionfile` o `~/.config/tint2/tint2rc`, eliminando secciones innecesarias para priorizar el maximo de iconos.
+- `chema-compact`: configuracion adaptada desde tu tint2 actual. En modo celda usa una seleccion compacta con botones principales, volumen, mostrar escritorio, bandeja del sistema, bateria y reloj. En modo barra adosada usa el conjunto completo de botones, ejecutores y launchers del panel original.
 
 Tambien se puede abrir directamente desde CLI:
 
 ```bash
 winmirror-launcher --panel --show-tint2 --tint2-profile chema-compact --tint2-units 3
+winmirror-launcher --panel --show-tint2 --tint2-placement bottom
+winmirror-launcher --panel --show-tint2 --tint2-placement right
 ```
 
-Desde el menu contextual se puede elegir entre 1 y 8 espacios para tint2. Si quieres que entren mas iconos de bandeja o launchers, sube ese valor.
+Desde el menu contextual se puede elegir entre 1 y 8 espacios para tint2 cuando esta como celda. Tambien se puede cambiar la ubicacion a `arriba`, `abajo`, `izquierda` o `derecha`. En `arriba` y `abajo`, tint2 se extiende por todo el ancho del panel; en `izquierda` y `derecha`, por toda la altura. Los launchers masivos se reservan para los modos adosados porque tint2 no ajusta launchers en cuadricula dentro de una sola celda.
 
 ## Mini-Terminales
 
@@ -176,6 +178,7 @@ winmirror-launcher --panel --fps 4
 winmirror-launcher --panel --frame-interval-seconds 10
 winmirror-launcher --panel --exclude-window 0x04000001
 winmirror-launcher --panel --show-tint2 --tint2-profile chema-compact --tint2-units 4
+winmirror-launcher --panel --show-tint2 --tint2-placement bottom
 winmirror-launcher --smoke-multi --limit 4
 ```
 
