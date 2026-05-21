@@ -217,7 +217,7 @@ Type=Application
 Name=Start
 GenericName=Application Menu
 Comment=Displays menu for launching installed applications
-Exec=jgmenu_run
+Exec=mb-jgtools main
 Terminal=false
 Icon={START_ICON_PATH}
 Categories=System;
@@ -659,9 +659,19 @@ class LauncherGrid(Gtk.DrawingArea):
                 icon = desktop_entry_value(path, "Icon")
                 command = desktop_entry_value(path, "Exec")
             if is_start_launcher(line) and START_ICON_PATH.exists():
+                name = "Start"
                 icon = str(START_ICON_PATH)
+                command = desktop_entry_value(path, "Exec") or "mb-jgtools main"
+                app_info = None
             if app_info is not None or command:
-                items.append({"path": path, "name": name, "icon": icon, "command": command, "app_info": app_info})
+                items.append({
+                    "path": path,
+                    "name": name,
+                    "icon": icon,
+                    "command": command,
+                    "app_info": app_info,
+                    "is_start": is_start_launcher(line),
+                })
         self.launchers = items
         self.icon_cache.clear()
         self.queue_draw()
@@ -702,9 +712,19 @@ class LauncherGrid(Gtk.DrawingArea):
             x = column * cell_width
             y = row * cell_height
             self.cells.append((launcher, x, y, cell_width, cell_height))
-            pixbuf = self.load_icon(launcher.get("icon"), icon_size)
+            is_start = bool(launcher.get("is_start"))
+            draw_icon_size = max(10, min(int(min(cell_width, cell_height) - 4), int(icon_size * 1.25))) if is_start else icon_size
+            if is_start:
+                cr.set_source_rgba(0.92, 0.72, 0.18, 0.22)
+                cr.rectangle(x + 1, y + 1, max(1, cell_width - 2), max(1, cell_height - 2))
+                cr.fill()
+                cr.set_source_rgba(1.0, 0.88, 0.34, 0.95)
+                cr.set_line_width(1.5)
+                cr.rectangle(x + 1.5, y + 1.5, max(0, cell_width - 3), max(0, cell_height - 3))
+                cr.stroke()
+            pixbuf = self.load_icon(launcher.get("icon"), draw_icon_size)
             if pixbuf is not None:
-                Gdk.cairo_set_source_pixbuf(cr, pixbuf, x + (cell_width - icon_size) / 2.0, y + (cell_height - icon_size) / 2.0)
+                Gdk.cairo_set_source_pixbuf(cr, pixbuf, x + (cell_width - draw_icon_size) / 2.0, y + (cell_height - draw_icon_size) / 2.0)
                 cr.paint()
             else:
                 label = widget.create_pango_layout((launcher.get("name") or "?")[:1])
@@ -762,12 +782,18 @@ class LauncherGrid(Gtk.DrawingArea):
                 return launcher
         return None
 
-    def on_button_press(self, _widget, event):
-        if int(event.button) != 1:
-            return False
-        launcher = self.launcher_at(event.x, event.y)
-        if launcher is None:
-            return False
+    def command_for_launcher(self, launcher):
+        command = launcher.get("command") or ""
+        return command.replace("%U", "").replace("%u", "").replace("%F", "").replace("%f", "").strip()
+
+    def launch_launcher(self, launcher):
+        command = self.command_for_launcher(launcher)
+        if command:
+            try:
+                subprocess.Popen(["/bin/sh", "-lc", command], cwd=os.path.expanduser("~"), start_new_session=True)
+            except OSError:
+                return True
+            return True
         app_info = launcher.get("app_info")
         if app_info is not None:
             try:
@@ -775,15 +801,15 @@ class LauncherGrid(Gtk.DrawingArea):
             except GLib.Error:
                 pass
             return True
-        command = launcher.get("command") or ""
-        command = command.replace("%U", "").replace("%u", "").replace("%F", "").replace("%f", "").strip()
-        if not command:
-            return True
-        try:
-            subprocess.Popen(["/bin/sh", "-lc", command], cwd=os.path.expanduser("~"), start_new_session=True)
-        except OSError:
-            return True
-        return True
+        return False
+
+    def on_button_press(self, _widget, event):
+        if int(event.button) != 1:
+            return False
+        launcher = self.launcher_at(event.x, event.y)
+        if launcher is None:
+            return False
+        return self.launch_launcher(launcher)
 
 
 class Tint2Slot(Gtk.Box):
@@ -1570,10 +1596,12 @@ class SimpleMirrorTile(Gtk.DrawingArea):
             layout.set_width(max(1, width - 8) * Pango.SCALE)
             _tw, th = layout.get_pixel_size()
             cr.set_source_rgba(0.0, 0.0, 0.0, 0.68)
-            cr.rectangle(0, max(0, height - th - 5), width, th + 5)
+            title_y = 0 if self.triangle_orientation == "down" else max(0, height - th - 5)
+            text_y = 2 if self.triangle_orientation == "down" else max(1, height - th - 3)
+            cr.rectangle(0, title_y, width, th + 5)
             cr.fill()
             cr.set_source_rgb(0.92, 0.92, 0.92)
-            cr.move_to(4, max(1, height - th - 3))
+            cr.move_to(4, text_y)
             PangoCairo.show_layout(cr, layout)
 
         if self.panel is not None and self.panel.order_edit_mode:
@@ -1880,12 +1908,10 @@ class SimpleLauncherPanel:
 
     def utility_slots(self):
         slots = []
-        slots.extend(self.terminal_slots)
         slots.extend(self.executor_slots)
+        slots.extend(self.terminal_slots)
         if self.show_clock:
             slots.append(self.clock_slot)
-        if self.show_launchers:
-            slots.append(self.launcher_grid)
         return slots
 
     def tint2_in_cell(self):
@@ -1896,10 +1922,25 @@ class SimpleLauncherPanel:
 
     def layout_entries(self):
         entries = [(tile, 1) for tile in self.visible_tiles()]
-        entries.extend((slot, self.widget_slot_units(slot)) for slot in self.utility_slots())
         entries.append((self.filter_entry, 1))
+        entries.extend((slot, self.widget_slot_units(slot)) for slot in self.utility_slots())
         if self.show_tint2 and self.tint2_in_cell():
             entries.append((self.tint2_slot, self.widget_slot_units(self.tint2_slot)))
+        if self.show_launchers:
+            entries.append((self.launcher_grid, self.widget_slot_units(self.launcher_grid)))
+        return entries
+
+    def triangle_layout_entries(self):
+        entries = [(tile, 1) for tile in self.visible_tiles()]
+        entries.append((self.filter_entry, 2))
+        entries.extend((slot, 2) for slot in self.executor_slots)
+        entries.extend((slot, 2) for slot in self.terminal_slots)
+        if self.show_clock:
+            entries.append((self.clock_slot, 2))
+        if self.show_tint2 and self.tint2_in_cell():
+            entries.append((self.tint2_slot, 2))
+        if self.show_launchers:
+            entries.append((self.launcher_grid, max(3, self.launcher_units)))
         return entries
 
     def widget_slot_units(self, widget):
@@ -2216,51 +2257,41 @@ class SimpleLauncherPanel:
 
     def fit_triangular_layout(self, width, height):
         visible_tiles = self.visible_tiles()
+        visible_tile_set = set(visible_tiles)
         for tile in self.tiles:
             tile.set_visible(tile in visible_tiles)
             tile.set_triangle_orientation(None)
-        entries = [(slot, self.widget_slot_units(slot)) for slot in self.utility_slots()]
-        entries.append((self.filter_entry, 1))
-        if self.show_tint2 and self.tint2_in_cell():
-            entries.append((self.tint2_slot, self.widget_slot_units(self.tint2_slot)))
-
-        utility_height = 0
-        utility_columns = 1
-        if entries:
-            utility_columns = max(1, int(width // max(1, self.tile_width)))
-            utility_rows = self.layout_rows_for_entries(entries, utility_columns)
-            utility_height = min(height // 2, utility_rows * max(MIN_TILE_HEIGHT, min(MAX_TILE_HEIGHT, self.tile_height)))
-
-        triangle_height = max(MIN_TILE_HEIGHT, height - utility_height)
-        columns, rows, tile_width, tile_height = self.choose_triangle_shape(width, triangle_height, len(visible_tiles))
+        entries = self.triangle_layout_entries()
+        slot_count = sum(units for _widget, units in entries)
+        columns, rows, tile_width, tile_height = self.choose_triangle_shape(width, height, slot_count)
         self.current_columns = columns
         self.current_rows = rows
         self.tile_width = clamp(tile_width, MIN_TILE_WIDTH, MAX_TILE_WIDTH, self.tile_width)
         self.tile_height = clamp(tile_height, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, self.tile_height)
+        slot_step = max(1, self.tile_width * 0.5)
 
-        for index, tile in enumerate(visible_tiles):
-            row = index // columns
+        for widget, index, span in self.iter_layout_positions(entries, columns):
             column = index % columns
-            x = int(round(column * self.tile_width * 0.5))
+            row = index // columns
+            x = int(round(column * slot_step))
             y = int(round(row * self.tile_height))
-            tile.set_triangle_orientation("up" if (row + column) % 2 == 0 else "down")
-            tile.set_layout_size(self.tile_width, self.tile_height)
-            self.grid.move(tile, x, y)
-            tile.show()
+            if isinstance(widget, SimpleMirrorTile):
+                widget.set_triangle_orientation("up" if (row + column) % 2 == 0 else "down")
+                widget.set_layout_size(self.tile_width, self.tile_height)
+                widget.show()
+                self.grid.move(widget, x, y)
+                continue
+            width_px = max(1, min(width - x, int(round(slot_step * span))))
+            widget.set_size_request(width_px, max(1, int(self.tile_height)))
+            if isinstance(widget, LauncherGrid):
+                widget.set_layout_size(width_px, self.tile_height)
+            self.grid.move(widget, x, y)
+            if widget is self.tint2_slot:
+                self.update_tint2_target_rect(x, y, width_px, self.tile_height)
 
-        if entries:
-            y_offset = rows * self.tile_height
-            for widget, index, span in self.iter_layout_positions(entries, utility_columns):
-                column = index % utility_columns
-                row = index // utility_columns
-                x = column * self.tile_width
-                width_px = self.tile_width * max(1, min(span, utility_columns - column))
-                widget.set_size_request(max(1, int(width_px)), max(1, int(self.tile_height)))
-                if isinstance(widget, LauncherGrid):
-                    widget.set_layout_size(width_px, self.tile_height)
-                self.grid.move(widget, int(x), int(y_offset + row * self.tile_height))
-                if widget is self.tint2_slot:
-                    self.update_tint2_target_rect(int(x), int(y_offset + row * self.tile_height), width_px, self.tile_height)
+        for tile in self.tiles:
+            if tile not in visible_tile_set:
+                tile.set_visible(False)
         self.clock_slot.set_visible(self.show_clock)
         self.launcher_grid.set_visible(self.show_launchers)
         self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
@@ -2309,6 +2340,9 @@ class SimpleLauncherPanel:
         width = alloc.width
         height = alloc.height
         if width <= 1 or height <= 1:
+            return
+        if self.mirror_layout_mode == "triangles":
+            self.fit_triangular_layout(width, height)
             return
         entries = self.layout_entries()
         slot_count = sum(units for _widget, units in entries)
