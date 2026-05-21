@@ -2352,7 +2352,7 @@ class SimpleLauncherPanel:
             x = int(round(column * self.tile_width * 0.5))
             y = int(round(row * self.tile_height))
             if isinstance(widget, SimpleMirrorTile):
-                widget.set_triangle_orientation("up" if cursor % 2 == 0 else "down")
+                widget.set_triangle_orientation("down" if cursor % 2 == 0 else "up")
                 widget.set_layout_size(self.tile_width, self.tile_height)
                 self.grid.move(widget, x, y)
                 widget.show()
