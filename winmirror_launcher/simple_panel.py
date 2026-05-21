@@ -333,28 +333,18 @@ def build_tint2_config(profile, width=240, height=48, orientation="horizontal", 
     plugin_blocks = []
     option_blocks = []
     if profile == "chema-compact":
-        button_blocks = read_current_tint2_plugin_blocks("button")
-        button_blocks = [block for block in button_blocks if not is_launcher_group_button(block)]
-        execp_blocks = read_current_tint2_plugin_blocks("execp")
-        battery_block = read_current_tint2_option_block(("battery_", "bat1_", "bat2_", "ac_"))
         cell_mode = placement == "cell"
         if cell_mode:
-            compact_buttons = button_blocks[:2]
-            plugin_blocks.extend(compact_buttons)
-            plugin_blocks.extend(execp_blocks[:1])
-            option_blocks.extend(block for block in (battery_block,) if block)
             launcher_lines = []
-            panel_items = tint2_items_for(len(compact_buttons), min(1, len(execp_blocks)), False, bool(battery_block))
+            panel_items = "S"
         else:
-            plugin_blocks.extend(button_blocks)
-            plugin_blocks.extend(execp_blocks)
-            option_blocks.extend(block for block in (battery_block,) if block)
-            panel_items = tint2_items_for(len(button_blocks), len(execp_blocks), bool(launcher_lines), bool(battery_block))
+            panel_items = "SL" if launcher_lines else "S"
         if not cell_mode:
             for line in read_current_tint2_launchers():
                 if line not in launcher_lines:
                     launcher_lines.append(line)
             launcher_lines = order_tint2_launchers(launcher_lines)
+            panel_items = "SL" if launcher_lines else "S"
         taskbar_lines = [
             "taskbar_mode = multi_desktop",
             "taskbar_hide_if_empty = 1",
