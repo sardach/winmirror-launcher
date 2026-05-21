@@ -8,12 +8,13 @@ from pathlib import Path
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("GdkX11", "3.0")
+gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("Pango", "1.0")
 gi.require_version("PangoCairo", "1.0")
 gi.require_version("Vte", "2.91")
 gi.require_version("Gio", "2.0")
 
-from gi.repository import Gdk, GdkX11, Gio, GLib, Gtk, Pango, PangoCairo, Vte
+from gi.repository import Gdk, GdkPixbuf, GdkX11, Gio, GLib, Gtk, Pango, PangoCairo, Vte
 
 from .window_registry import WindowRegistry
 from .x11 import run_command
@@ -611,13 +612,21 @@ class LauncherGrid(Gtk.DrawingArea):
             path = launcher_path_from_line(line)
             if path is None:
                 continue
-            name = desktop_entry_value(path, "Name") or path.stem
-            icon = desktop_entry_value(path, "Icon")
+            app_info = Gio.DesktopAppInfo.new_from_filename(str(path))
+            name = path.stem
+            icon = None
+            command = ""
+            if app_info is not None:
+                name = app_info.get_display_name() or app_info.get_name() or path.stem
+                icon = app_info.get_icon()
+            else:
+                name = desktop_entry_value(path, "Name") or path.stem
+                icon = desktop_entry_value(path, "Icon")
+                command = desktop_entry_value(path, "Exec")
             if is_start_launcher(line) and Path("/home/chema/Descargas/kris.jpg").exists():
                 icon = "/home/chema/Descargas/kris.jpg"
-            command = desktop_entry_value(path, "Exec")
-            if command:
-                items.append({"path": path, "name": name, "icon": icon, "command": command})
+            if app_info is not None or command:
+                items.append({"path": path, "name": name, "icon": icon, "command": command, "app_info": app_info})
         self.launchers = items
         self.icon_cache.clear()
         self.queue_draw()
@@ -648,13 +657,10 @@ class LauncherGrid(Gtk.DrawingArea):
         self.cells = []
         if not self.launchers:
             return False
-        icon_size = max(14, min(24, int(min(width, height) / 2.4)))
-        cell_size = icon_size + 6
-        columns = max(1, width // cell_size)
-        rows = max(1, int(math.ceil(len(self.launchers) / columns)))
+        columns, rows = self.best_grid_shape(width, height, len(self.launchers))
         cell_width = width / columns
         cell_height = max(1, height / rows)
-        icon_size = max(12, min(icon_size, int(min(cell_width, cell_height) - 4)))
+        icon_size = max(10, min(24, int(min(cell_width, cell_height) - 6)))
         for index, launcher in enumerate(self.launchers):
             row = index // columns
             column = index % columns
@@ -674,22 +680,42 @@ class LauncherGrid(Gtk.DrawingArea):
                 PangoCairo.show_layout(cr, label)
         return False
 
-    def load_icon(self, icon_name, size):
-        if not icon_name:
+    def best_grid_shape(self, width, height, count):
+        best = None
+        for columns in range(1, count + 1):
+            rows = int(math.ceil(float(count) / columns))
+            cell_edge = min(float(width) / columns, float(height) / rows)
+            empty = (columns * rows) - count
+            aspect_penalty = abs(math.log(max(0.1, (float(width) / columns) / max(1.0, float(height) / rows))))
+            score = cell_edge - (empty * 0.2) - (aspect_penalty * 1.5)
+            if best is None or score > best[0]:
+                best = (score, columns, rows)
+        return best[1], best[2]
+
+    def load_icon(self, icon_ref, size):
+        if not icon_ref:
             return None
-        key = (icon_name, int(size))
+        key = (str(icon_ref), int(size))
         if key in self.icon_cache:
             return self.icon_cache[key]
         pixbuf = None
         try:
-            icon_path = Path(os.path.expanduser(icon_name))
-            if icon_path.exists():
-                pixbuf = Gdk.pixbuf_new_from_file_at_scale(str(icon_path), size, size, False)
-            else:
+            if isinstance(icon_ref, Gio.FileIcon):
+                icon_path = Path(icon_ref.get_file().get_path())
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(icon_path), size, size, False)
+            elif isinstance(icon_ref, Gio.Icon):
                 theme = Gtk.IconTheme.get_default()
-                pixbuf = theme.load_icon(icon_name, size, 0)
+                info = theme.lookup_by_gicon(icon_ref, size, Gtk.IconLookupFlags.FORCE_SIZE)
+                pixbuf = info.load_icon() if info is not None else None
+            else:
+                icon_path = Path(os.path.expanduser(str(icon_ref)))
+                if icon_path.exists():
+                    pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(icon_path), size, size, False)
+                else:
+                    theme = Gtk.IconTheme.get_default()
+                    pixbuf = theme.load_icon(str(icon_ref), size, Gtk.IconLookupFlags.FORCE_SIZE)
             if pixbuf is not None and (pixbuf.get_width() != size or pixbuf.get_height() != size):
-                pixbuf = pixbuf.scale_simple(size, size, Gdk.InterpType.BILINEAR)
+                pixbuf = pixbuf.scale_simple(size, size, GdkPixbuf.InterpType.BILINEAR)
         except Exception:
             pixbuf = None
         self.icon_cache[key] = pixbuf
@@ -707,6 +733,13 @@ class LauncherGrid(Gtk.DrawingArea):
         launcher = self.launcher_at(event.x, event.y)
         if launcher is None:
             return False
+        app_info = launcher.get("app_info")
+        if app_info is not None:
+            try:
+                app_info.launch([], None)
+            except GLib.Error:
+                pass
+            return True
         command = launcher.get("command") or ""
         command = command.replace("%U", "").replace("%u", "").replace("%F", "").replace("%f", "").strip()
         if not command:
@@ -732,18 +765,15 @@ class Tint2Slot(Gtk.Box):
         self.orientation = "horizontal"
         self.config_orientation = None
         self.window_id = None
-        self.reparented_window_id = None
         self.move_attempts = 0
         self.suspended_tint2_commands = []
         self.set_size_request(DEFAULT_TILE_WIDTH * DEFAULT_TINT2_SLOT_UNITS, DEFAULT_TILE_HEIGHT)
 
         self.launcher_grid = LauncherGrid()
-        self.tray_socket = Gtk.Socket()
         self.label = Gtk.Label(label="tint2")
         self.label.set_xalign(0.5)
         self.label.set_yalign(0.5)
         self.pack_start(self.launcher_grid, True, True, 0)
-        self.pack_start(self.tray_socket, False, False, 0)
         self.pack_start(self.label, False, False, 0)
 
     def uses_launcher_grid(self):
@@ -753,15 +783,13 @@ class Tint2Slot(Gtk.Box):
         use_grid = self.uses_launcher_grid()
         if use_grid:
             self.launcher_grid.show()
-            self.tray_socket.hide()
             self.label.hide()
         else:
             self.launcher_grid.hide()
-            self.tray_socket.hide()
             self.label.show()
 
     def uses_external_tint2(self):
-        return True
+        return not self.uses_launcher_grid()
 
     def set_profile(self, profile):
         self.profile = normalize_tint2_profile(profile)
@@ -889,7 +917,6 @@ class Tint2Slot(Gtk.Box):
             self.kill_tint2_processes_for_config(config_path)
         self.process = None
         self.window_id = None
-        self.reparented_window_id = None
         if self.config_path is not None:
             try:
                 self.config_path.unlink()
@@ -924,9 +951,11 @@ class Tint2Slot(Gtk.Box):
         width = max(1, int(width))
         height = max(1, int(height))
         if self.uses_launcher_grid():
-            tray_height = max(18, min(height, max(18, int(round(height * 0.32)))))
-            self.launcher_grid.set_layout_size(width, max(1, height - tray_height))
-            self.target_rect = (int(x), int(y + height - tray_height), width, tray_height)
+            self.launcher_grid.set_layout_size(width, height)
+            self.target_rect = None
+            if self.process is not None or self.config_path is not None:
+                self.stop()
+            return
         else:
             self.target_rect = (int(x), int(y), width, height)
         if (
@@ -963,39 +992,6 @@ class Tint2Slot(Gtk.Box):
             self.move_source_id = None
             return False
         x, y, width, height = self.target_rect
-        if self.uses_launcher_grid():
-            if self.owner is None or self.owner.win.get_window() is None:
-                self.move_attempts += 1
-                if self.move_attempts < 80:
-                    return True
-                self.move_source_id = None
-                return False
-            try:
-                parent_id = str(int(self.owner.win.get_window().get_xid()))
-            except AttributeError:
-                parent_id = str(int(self.owner.own_window_id or 0))
-            if self.reparented_window_id != window_id:
-                subprocess.run(
-                    ["xdotool", "windowreparent", window_id, parent_id],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-                self.reparented_window_id = window_id
-            subprocess.run(
-                ["wmctrl", "-ir", window_id, "-b", "add,skip_taskbar,skip_pager"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-            subprocess.run(
-                ["xdotool", "windowmove", window_id, "0", "0", "windowsize", window_id, str(width), str(height)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-            self.move_source_id = None
-            return False
         subprocess.run(
             ["wmctrl", "-ir", window_id, "-b", "add,skip_taskbar,skip_pager"],
             stdout=subprocess.DEVNULL,
