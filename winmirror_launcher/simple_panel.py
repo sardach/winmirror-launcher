@@ -121,10 +121,7 @@ def normalize_tint2_placement(value):
 
 
 def effective_tint2_placement(profile, placement):
-    placement = normalize_tint2_placement(placement)
-    if normalize_tint2_profile(profile) == "chema-compact" and placement == "cell":
-        return "bottom"
-    return placement
+    return normalize_tint2_placement(placement)
 
 
 def read_current_tint2_launchers():
@@ -798,7 +795,7 @@ class Tint2Slot(Gtk.Box):
         self.pack_start(self.label, False, False, 0)
 
     def uses_launcher_grid(self):
-        return self.owner is not None and self.owner.tint2_placement == "cell" and self.profile == "chema-compact"
+        return False
 
     def update_child_visibility(self):
         use_grid = self.uses_launcher_grid()
