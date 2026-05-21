@@ -303,9 +303,10 @@ def is_launcher_group_button(block):
 
 
 def tint2_items_for(button_count, exec_count, has_launchers=True, has_battery=True):
-    items = ("P" * button_count) + ("E" * exec_count) + "S"
+    items = "S" + ("E" * exec_count)
     if has_battery:
         items += "B"
+    items += "P" * button_count
     if has_launchers:
         items += "L"
     return items
