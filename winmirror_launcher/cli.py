@@ -14,12 +14,14 @@ from .persistence import StateStore
 from .simple_panel import (
     DEFAULT_TILE_HEIGHT,
     DEFAULT_TILE_WIDTH,
+    DEFAULT_LAUNCHER_SLOT_UNITS,
     DEFAULT_TINT2_PLACEMENT,
     DEFAULT_TINT2_SLOT_UNITS,
     MAX_TINT2_SLOT_UNITS,
     MIN_TINT2_SLOT_UNITS,
     TINT2_PLACEMENTS,
     TINT2_PROFILES,
+    MIRROR_LAYOUT_MODES,
     SimpleLauncherPanel,
     effective_tint2_placement,
 )
@@ -203,6 +205,12 @@ def build_parser():
         help="Escala exacta del zoom visual al pasar el cursor (1.0 a 2.5)",
     )
     parser.add_argument(
+        "--mirror-layout",
+        choices=sorted(MIRROR_LAYOUT_MODES),
+        default=None,
+        help="Forma de los mirrors en Winmirror Bar",
+    )
+    parser.add_argument(
         "--show-borders",
         action="store_true",
         default=None,
@@ -249,28 +257,25 @@ def build_parser():
         "--show-tint2",
         action="store_true",
         default=None,
-        help="Muestra una celda tint2 antes del buscador",
+        help="Muestra la bandeja del sistema en la barra",
     )
     parser.add_argument(
         "--tint2-profile",
         choices=sorted(TINT2_PROFILES),
         default=None,
-        help="Perfil tint2 inicial para la celda integrada",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--tint2-units",
         type=int,
         default=None,
-        help=(
-            f"Cantidad de espacios que ocupa tint2 "
-            f"({MIN_TINT2_SLOT_UNITS}-{MAX_TINT2_SLOT_UNITS}, default: {DEFAULT_TINT2_SLOT_UNITS})"
-        ),
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--tint2-placement",
         choices=sorted(TINT2_PLACEMENTS),
         default=None,
-        help="Ubicacion de tint2: celda interna o barra adosada al panel",
+        help=argparse.SUPPRESS,
     )
     return parser
 
@@ -323,10 +328,7 @@ def main(argv=None):
             raise RuntimeError("No hay ventanas disponibles para el panel.")
         simple_state = state.get("simple_panel") if isinstance(state.get("simple_panel"), dict) else {}
         tint2_profile = args.tint2_profile or simple_state.get("tint2_profile", "default")
-        tint2_placement = effective_tint2_placement(
-            tint2_profile,
-            args.tint2_placement or simple_state.get("tint2_placement", DEFAULT_TINT2_PLACEMENT),
-        )
+        tint2_placement = DEFAULT_TINT2_PLACEMENT
         hover_mode = args.hover_mode if args.hover_mode is not None else simple_state.get("hover_mode")
         hover_expand = args.hover_expand if args.hover_expand is not None else bool(hover_mode and hover_mode != "off")
         SimpleLauncherPanel(
@@ -348,6 +350,7 @@ def main(argv=None):
             hover_expand=hover_expand,
             hover_mode=hover_mode,
             hover_scale=args.hover_scale if args.hover_scale is not None else simple_state.get("hover_scale"),
+            mirror_layout_mode=args.mirror_layout or simple_state.get("mirror_layout_mode", "grid"),
             show_borders=args.show_borders if args.show_borders is not None else simple_state.get("show_borders", False),
             order_mode=args.order or simple_state.get("order_mode", "last-used"),
             label_mode=args.label_mode or simple_state.get("label_mode", "title"),
@@ -361,9 +364,11 @@ def main(argv=None):
             excluded_window_ids=args.exclude_window,
             show_clock=simple_state.get("show_clock", False),
             clock_mode=simple_state.get("clock_mode", "date-time"),
+            show_launchers=simple_state.get("show_launchers", True),
+            launcher_units=simple_state.get("launcher_units", DEFAULT_LAUNCHER_SLOT_UNITS),
             show_tint2=args.show_tint2 if args.show_tint2 is not None else simple_state.get("show_tint2", False),
             tint2_profile=tint2_profile,
-            tint2_units=args.tint2_units if args.tint2_units is not None else simple_state.get("tint2_units", DEFAULT_TINT2_SLOT_UNITS),
+            tint2_units=min(2, args.tint2_units if args.tint2_units is not None else simple_state.get("tint2_units", 2)),
             tint2_placement=tint2_placement,
             registry=registry,
             tint2_take_systray=simple_state.get("tint2_take_systray", False),

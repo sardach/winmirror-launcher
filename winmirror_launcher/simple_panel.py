@@ -35,12 +35,15 @@ ORDER_MODES = {"manual", "name", "last-used"}
 LABEL_MODES = {"title", "app"}
 IDLE_MODES = {"off", "collapse", "hide"}
 CLOCK_MODES = {"time", "time-seconds", "date-time", "full"}
+MIRROR_LAYOUT_MODES = {"grid", "triangles"}
 TINT2_PROFILES = {"default", "chema-compact"}
 TINT2_PLACEMENTS = {"cell", "top", "bottom", "left", "right"}
 MIN_TINT2_SLOT_UNITS = 1
 MAX_TINT2_SLOT_UNITS = 8
 DEFAULT_TINT2_SLOT_UNITS = 3
+DEFAULT_LAUNCHER_SLOT_UNITS = 4
 DEFAULT_TINT2_PLACEMENT = "cell"
+TINT2_RESTART_COOLDOWN_MS = 650
 START_ICON_PATH = Path("/home/chema/Descargas/kris.jpg")
 START_LAUNCHER_PATH = Path.home() / ".local" / "share" / "applications" / "winmirror-start.desktop"
 HOVER_MODES = {
@@ -109,6 +112,10 @@ def normalize_idle_mode(value):
 
 def normalize_clock_mode(value):
     return value if value in CLOCK_MODES else "date-time"
+
+
+def normalize_mirror_layout_mode(value):
+    return value if value in MIRROR_LAYOUT_MODES else "grid"
 
 
 def normalize_tint2_profile(value):
@@ -364,8 +371,8 @@ def build_tint2_config(profile, width=240, height=48, orientation="horizontal", 
     orientation = "vertical" if orientation == "vertical" else "horizontal"
     placement = normalize_tint2_placement(placement)
     role = role if role in {"combined", "tray", "launchers"} else "combined"
-    launcher_lines = standard_tint2_launchers()
-    panel_items = "LTS" if launcher_lines else "TS"
+    launcher_lines = []
+    panel_items = "S"
     width = max(48, int(width or 240))
     height = max(18, int(height or 48))
     icon_edge = width if orientation == "vertical" else height
@@ -381,27 +388,6 @@ def build_tint2_config(profile, width=240, height=48, orientation="horizontal", 
     plugin_blocks = []
     option_blocks = []
     if profile == "chema-compact":
-        cell_mode = placement == "cell"
-        if role == "tray":
-            launcher_lines = []
-            panel_items = "S"
-        elif role == "launchers":
-            for line in read_current_tint2_launchers():
-                if line not in launcher_lines:
-                    launcher_lines.append(line)
-            launcher_lines = order_tint2_launchers(launcher_lines)
-            panel_items = "L"
-        elif cell_mode:
-            launcher_lines = []
-            panel_items = "S"
-        else:
-            panel_items = "SL" if launcher_lines else "S"
-        if role == "combined" and not cell_mode:
-            for line in read_current_tint2_launchers():
-                if line not in launcher_lines:
-                    launcher_lines.append(line)
-            launcher_lines = order_tint2_launchers(launcher_lines)
-            panel_items = "SL" if launcher_lines else "S"
         taskbar_lines = [
             "taskbar_mode = multi_desktop",
             "taskbar_hide_if_empty = 1",
@@ -811,6 +797,7 @@ class Tint2Slot(Gtk.Box):
         self.config_path = None
         self.config_paths = {}
         self.move_source_id = None
+        self.restart_source_id = None
         self.target_rect = None
         self.target_rects = {}
         self.config_size = None
@@ -846,16 +833,11 @@ class Tint2Slot(Gtk.Box):
     def uses_external_tint2(self):
         return not self.uses_launcher_grid()
 
-    def uses_split_chema_tint2(self):
-        return self.profile == "chema-compact" and self.uses_external_tint2()
-
     def should_take_systray(self):
-        return self.take_systray or self.uses_split_chema_tint2()
+        return self.take_systray
 
     def tint2_roles(self):
-        if self.uses_split_chema_tint2():
-            return ("tray", "launchers")
-        return ("combined",)
+        return ("tray",)
 
     def role_process(self, role):
         return self.processes.get(role)
@@ -1019,6 +1001,9 @@ class Tint2Slot(Gtk.Box):
         if self.move_source_id is not None:
             GLib.source_remove(self.move_source_id)
             self.move_source_id = None
+        if self.restart_source_id is not None:
+            GLib.source_remove(self.restart_source_id)
+            self.restart_source_id = None
         for role in list(self.processes) + [role for role in self.config_paths if role not in self.processes]:
             self.stop_role(role)
         self.sync_primary_process()
@@ -1068,21 +1053,7 @@ class Tint2Slot(Gtk.Box):
                 pass
 
     def split_target_rects(self, x, y, width, height):
-        if not self.uses_split_chema_tint2():
-            return {"combined": (int(x), int(y), width, height)}
-        if self.orientation == "vertical":
-            tray_height = max(1, min(max(width * 3, 166), max(1, height - 1)))
-            launcher_height = max(1, height - tray_height)
-            return {
-                "tray": (int(x), int(y), width, tray_height),
-                "launchers": (int(x), int(y) + tray_height, width, launcher_height),
-            }
-        tray_width = max(1, min(max(height * 3, 166), max(1, width - 1)))
-        launcher_width = max(1, width - tray_width)
-        return {
-            "tray": (int(x), int(y), tray_width, height),
-            "launchers": (int(x) + tray_width, int(y), launcher_width, height),
-        }
+        return {role: (int(x), int(y), width, height) for role in self.tint2_roles()}
 
     def set_target_rect(self, x, y, width, height):
         width = max(1, int(width))
@@ -1109,9 +1080,20 @@ class Tint2Slot(Gtk.Box):
                 or self.config_orientations.get(role) != self.orientation
             )
         if size_changed:
-            self.restart()
+            self.schedule_restart()
             return
         self.schedule_move(force=True)
+
+    def schedule_restart(self):
+        if self.restart_source_id is not None:
+            GLib.source_remove(self.restart_source_id)
+        self.restart_source_id = GLib.timeout_add(TINT2_RESTART_COOLDOWN_MS, self.restart_after_cooldown)
+        self.schedule_move(force=True)
+
+    def restart_after_cooldown(self):
+        self.restart_source_id = None
+        self.restart()
+        return False
 
     def schedule_move(self, force=False):
         if force and self.move_source_id is not None:
@@ -1239,6 +1221,7 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         self.refresh_source_id = None
         self.layout_width = self.tile_width
         self.layout_height = self.tile_height
+        self.triangle_orientation = None
 
         self.set_hexpand(True)
         self.set_vexpand(True)
@@ -1290,6 +1273,37 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         self.layout_width = max(1, int(round(width)))
         self.layout_height = max(1, int(round(height)))
         self.set_size_request(self.layout_width, self.layout_height)
+
+    def set_triangle_orientation(self, orientation):
+        orientation = orientation if orientation in {"up", "down"} else None
+        if self.triangle_orientation == orientation:
+            return
+        self.triangle_orientation = orientation
+        self.queue_draw()
+
+    def triangle_path(self, cr, width, height):
+        if self.triangle_orientation == "down":
+            cr.move_to(0, 0)
+            cr.line_to(width, 0)
+            cr.line_to(width / 2.0, height)
+        else:
+            cr.move_to(width / 2.0, 0)
+            cr.line_to(width, height)
+            cr.line_to(0, height)
+        cr.close_path()
+
+    def point_in_triangle(self, x, y, width, height):
+        if self.triangle_orientation not in {"up", "down"}:
+            return True
+        width = max(1.0, float(width))
+        height = max(1.0, float(height))
+        x = float(x)
+        y = float(y)
+        if not (0 <= x <= width and 0 <= y <= height):
+            return False
+        half_span = (y / height) * (width / 2.0) if self.triangle_orientation == "up" else ((height - y) / height) * (width / 2.0)
+        center = width / 2.0
+        return center - half_span <= x <= center + half_span
 
     def release_layout_size(self):
         self.layout_width = SHRINK_TILE_WIDTH
@@ -1418,10 +1432,12 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         if int(event.button) == 3 and self.panel is not None:
             self.panel.show_context_menu(event, self)
             return True
+        alloc = self.get_allocation()
+        if not self.point_in_triangle(event.x, event.y, alloc.width, alloc.height):
+            return False
         if self.panel is not None and self.panel.order_edit_mode and int(event.button) == 1:
             if self.handle_order_edit_click(event):
                 return True
-        alloc = self.get_allocation()
         if self.show_close and int(event.button) == 1:
             if event.x >= alloc.width - 18 and event.y <= 18:
                 self.close_window()
@@ -1477,11 +1493,21 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         height = max(1, alloc.height)
 
         cr.set_source_rgb(0.02, 0.02, 0.02)
-        cr.rectangle(0, 0, width, height)
+        if self.triangle_orientation in {"up", "down"}:
+            self.triangle_path(cr, width, height)
+        else:
+            cr.rectangle(0, 0, width, height)
         cr.fill()
+
+        if self.triangle_orientation in {"up", "down"}:
+            cr.save()
+            self.triangle_path(cr, width, height)
+            cr.clip()
 
         if self.current_pixbuf is None:
             self.draw_placeholder(widget, cr, width, height)
+            if self.triangle_orientation in {"up", "down"}:
+                cr.restore()
             if self.show_borders:
                 self.draw_border(cr, width, height)
             return False
@@ -1505,6 +1531,8 @@ class SimpleMirrorTile(Gtk.DrawingArea):
             cr.set_source_rgba(1.0, 1.0, 1.0, min(0.18, 0.04 + ((self.hover_scale - 1.0) * 0.08)))
             cr.rectangle(0, 0, width, height)
             cr.fill()
+        if self.triangle_orientation in {"up", "down"}:
+            cr.restore()
         if self.show_borders:
             self.draw_border(cr, width, height)
         self.draw_overlays(widget, cr, width, height)
@@ -1513,7 +1541,10 @@ class SimpleMirrorTile(Gtk.DrawingArea):
     def draw_border(self, cr, width, height):
         cr.set_source_rgb(0.18, 0.18, 0.18)
         cr.set_line_width(1.0)
-        cr.rectangle(0.5, 0.5, max(0, width - 1), max(0, height - 1))
+        if self.triangle_orientation in {"up", "down"}:
+            self.triangle_path(cr, width, height)
+        else:
+            cr.rectangle(0.5, 0.5, max(0, width - 1), max(0, height - 1))
         cr.stroke()
 
     def draw_overlays(self, widget, cr, width, height):
@@ -1622,6 +1653,7 @@ class SimpleLauncherPanel:
         hover_expand=False,
         hover_mode=None,
         hover_scale=None,
+        mirror_layout_mode="grid",
         show_borders=False,
         order_mode="last-used",
         label_mode="title",
@@ -1634,6 +1666,8 @@ class SimpleLauncherPanel:
         show_clock=False,
         clock_mode="date-time",
         show_tint2=False,
+        show_launchers=True,
+        launcher_units=DEFAULT_LAUNCHER_SLOT_UNITS,
         tint2_profile="default",
         tint2_units=DEFAULT_TINT2_SLOT_UNITS,
         tint2_placement=DEFAULT_TINT2_PLACEMENT,
@@ -1657,6 +1691,7 @@ class SimpleLauncherPanel:
         self.hover_mode = normalize_hover_mode(hover_mode, hover_expand)
         self.hover_expand = self.hover_mode != "off"
         self.hover_scale = normalize_hover_scale(hover_scale, self.hover_mode, hover_expand)
+        self.mirror_layout_mode = normalize_mirror_layout_mode(mirror_layout_mode)
         self.show_borders = bool(show_borders)
         self.label_mode = normalize_label_mode(label_mode)
         self.sticky_workspaces = bool(sticky_workspaces)
@@ -1668,9 +1703,11 @@ class SimpleLauncherPanel:
         self.clock_mode = normalize_clock_mode(clock_mode)
         self.clock_source_id = None
         self.show_tint2 = bool(show_tint2)
+        self.show_launchers = bool(show_launchers)
+        self.launcher_units = normalize_tint2_units(launcher_units)
         self.tint2_profile = normalize_tint2_profile(tint2_profile)
         self.tint2_units = normalize_tint2_units(tint2_units)
-        self.tint2_placement = effective_tint2_placement(self.tint2_profile, tint2_placement)
+        self.tint2_placement = DEFAULT_TINT2_PLACEMENT
         self.window_refresh_source_id = None
         self.active_window_source_id = None
         self.idle_source_id = None
@@ -1731,6 +1768,8 @@ class SimpleLauncherPanel:
 
         self.clock_slot = ClockSlot(self.clock_mode)
         self.clock_slot.set_visible(self.show_clock)
+        self.launcher_grid = LauncherGrid()
+        self.launcher_grid.set_visible(self.show_launchers)
         self.tint2_slot = Tint2Slot(self.tint2_profile, take_systray=tint2_take_systray, owner=self)
         self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
         self.terminal_slots = []
@@ -1740,11 +1779,13 @@ class SimpleLauncherPanel:
         for info in self.filter_windows(windows):
             self.add_tile(info)
         self.grid.put(self.clock_slot, 0, 0)
+        self.grid.put(self.launcher_grid, 0, 0)
         self.grid.put(self.tint2_slot, 0, 0)
         self.grid.put(self.filter_entry, 0, 0)
 
         self.win.show_all()
         self.clock_slot.set_visible(self.show_clock)
+        self.launcher_grid.set_visible(self.show_launchers)
         self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
         if self.show_tint2:
             self.tint2_slot.start()
@@ -1792,6 +1833,7 @@ class SimpleLauncherPanel:
                 "tile_width": self.tile_width,
                 "tile_height": self.tile_height,
                 "fps": self.fps,
+                "mirror_layout_mode": self.mirror_layout_mode,
                 "show_title": self.show_title,
                 "show_close": self.show_close,
                 "show_workspace": self.show_workspace,
@@ -1807,6 +1849,8 @@ class SimpleLauncherPanel:
                 "show_clock": self.show_clock,
                 "clock_mode": self.clock_mode,
                 "show_tint2": self.show_tint2,
+                "show_launchers": self.show_launchers,
+                "launcher_units": self.launcher_units,
                 "tint2_profile": self.tint2_profile,
                 "tint2_units": self.tint2_units,
                 "tint2_placement": self.tint2_placement,
@@ -1840,6 +1884,8 @@ class SimpleLauncherPanel:
         slots.extend(self.executor_slots)
         if self.show_clock:
             slots.append(self.clock_slot)
+        if self.show_launchers:
+            slots.append(self.launcher_grid)
         return slots
 
     def tint2_in_cell(self):
@@ -1857,7 +1903,11 @@ class SimpleLauncherPanel:
         return entries
 
     def widget_slot_units(self, widget):
-        return self.tint2_units if widget is self.tint2_slot else 1
+        if widget is self.tint2_slot:
+            return self.tint2_units
+        if widget is self.launcher_grid:
+            return self.launcher_units
+        return 1
 
     def iter_layout_positions(self, entries, columns):
         columns = max(1, int(columns))
@@ -1927,6 +1977,8 @@ class SimpleLauncherPanel:
             x = column * self.tile_width
             width = self.tile_width * span
         widget.set_size_request(max(1, int(width)), max(1, int(self.tile_height)))
+        if isinstance(widget, LauncherGrid):
+            widget.set_layout_size(width, self.tile_height)
         self.grid.move(widget, int(x), int(row * self.tile_height))
         widget.queue_resize()
         self.grid.queue_resize()
@@ -2143,7 +2195,86 @@ class SimpleLauncherPanel:
                 best = (score, columns, rows)
         return best[1], best[2]
 
+    def choose_triangle_shape(self, width, height, count):
+        if count <= 1:
+            return 1, 1, max(1, int(width)), max(1, int(height))
+        best = None
+        width = max(1, int(width))
+        height = max(1, int(height))
+        for columns in range(1, count + 1):
+            rows = int(math.ceil(float(count) / columns))
+            tile_width = width / (1.0 + max(0, columns - 1) * 0.5)
+            tile_height = height / rows
+            area = tile_width * tile_height * 0.5
+            aspect = tile_width / max(1.0, tile_height)
+            aspect_penalty = abs(math.log(max(0.1, aspect / 1.15)))
+            empty = (columns * rows) - count
+            score = area - (area * aspect_penalty * 0.22) - (empty * 30)
+            if best is None or score > best[0]:
+                best = (score, columns, rows, tile_width, tile_height)
+        return best[1], best[2], max(1, int(best[3])), max(1, int(best[4]))
+
+    def fit_triangular_layout(self, width, height):
+        visible_tiles = self.visible_tiles()
+        for tile in self.tiles:
+            tile.set_visible(tile in visible_tiles)
+            tile.set_triangle_orientation(None)
+        entries = [(slot, self.widget_slot_units(slot)) for slot in self.utility_slots()]
+        entries.append((self.filter_entry, 1))
+        if self.show_tint2 and self.tint2_in_cell():
+            entries.append((self.tint2_slot, self.widget_slot_units(self.tint2_slot)))
+
+        utility_height = 0
+        utility_columns = 1
+        if entries:
+            utility_columns = max(1, int(width // max(1, self.tile_width)))
+            utility_rows = self.layout_rows_for_entries(entries, utility_columns)
+            utility_height = min(height // 2, utility_rows * max(MIN_TILE_HEIGHT, min(MAX_TILE_HEIGHT, self.tile_height)))
+
+        triangle_height = max(MIN_TILE_HEIGHT, height - utility_height)
+        columns, rows, tile_width, tile_height = self.choose_triangle_shape(width, triangle_height, len(visible_tiles))
+        self.current_columns = columns
+        self.current_rows = rows
+        self.tile_width = clamp(tile_width, MIN_TILE_WIDTH, MAX_TILE_WIDTH, self.tile_width)
+        self.tile_height = clamp(tile_height, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, self.tile_height)
+
+        for index, tile in enumerate(visible_tiles):
+            row = index // columns
+            column = index % columns
+            x = int(round(column * self.tile_width * 0.5))
+            y = int(round(row * self.tile_height))
+            tile.set_triangle_orientation("up" if (row + column) % 2 == 0 else "down")
+            tile.set_layout_size(self.tile_width, self.tile_height)
+            self.grid.move(tile, x, y)
+            tile.show()
+
+        if entries:
+            y_offset = rows * self.tile_height
+            for widget, index, span in self.iter_layout_positions(entries, utility_columns):
+                column = index % utility_columns
+                row = index // utility_columns
+                x = column * self.tile_width
+                width_px = self.tile_width * max(1, min(span, utility_columns - column))
+                widget.set_size_request(max(1, int(width_px)), max(1, int(self.tile_height)))
+                if isinstance(widget, LauncherGrid):
+                    widget.set_layout_size(width_px, self.tile_height)
+                self.grid.move(widget, int(x), int(y_offset + row * self.tile_height))
+                if widget is self.tint2_slot:
+                    self.update_tint2_target_rect(int(x), int(y_offset + row * self.tile_height), width_px, self.tile_height)
+        self.clock_slot.set_visible(self.show_clock)
+        self.launcher_grid.set_visible(self.show_launchers)
+        self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
+        self.update_detached_tint2_target()
+        self.grid.queue_resize()
+        self.win.queue_resize()
+
     def relayout_tiles(self, columns, rows):
+        if self.mirror_layout_mode == "triangles":
+            alloc = self.grid.get_allocation()
+            if alloc.width <= 1 or alloc.height <= 1:
+                alloc = self.win.get_allocation()
+            self.fit_triangular_layout(max(1, alloc.width), max(1, alloc.height))
+            return
         columns = max(1, int(columns))
         entries = self.layout_entries()
         rows = max(1, int(rows), self.layout_rows_for_entries(entries, columns))
@@ -2151,6 +2282,7 @@ class SimpleLauncherPanel:
         self.current_rows = rows
         visible_tiles = self.visible_tiles()
         for tile in visible_tiles:
+            tile.set_triangle_orientation(None)
             if tile.get_parent() is None:
                 self.grid.put(tile, 0, 0)
             tile.show()
@@ -2159,6 +2291,7 @@ class SimpleLauncherPanel:
         for slot in self.utility_slots():
             slot.set_visible(True)
         self.clock_slot.set_visible(self.show_clock)
+        self.launcher_grid.set_visible(self.show_launchers)
         self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
         self.position_layout_entries(entries, columns)
         self.update_detached_tint2_target()
@@ -2298,6 +2431,12 @@ class SimpleLauncherPanel:
         self.fit_tiles_to_window()
 
     def apply_tile_size_requests(self):
+        if self.mirror_layout_mode == "triangles":
+            alloc = self.grid.get_allocation()
+            if alloc.width <= 1 or alloc.height <= 1:
+                alloc = self.win.get_allocation()
+            self.fit_triangular_layout(max(1, alloc.width), max(1, alloc.height))
+            return
         visible_tiles = self.visible_tiles()
         entries = self.layout_entries()
         slot_count = sum(units for _widget, units in entries)
@@ -2310,6 +2449,7 @@ class SimpleLauncherPanel:
 
         if self.hovered_tile not in visible_tiles or self.hover_scale <= 1.0:
             self.clock_slot.set_visible(self.show_clock)
+            self.launcher_grid.set_visible(self.show_launchers)
             self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
             self.position_layout_entries(entries, columns)
             self.update_detached_tint2_target()
@@ -2326,6 +2466,7 @@ class SimpleLauncherPanel:
             column_offsets.append(column_offsets[-1] + width)
 
         self.clock_slot.set_visible(self.show_clock)
+        self.launcher_grid.set_visible(self.show_launchers)
         self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
         self.position_layout_entries(entries, columns, column_offsets, column_widths)
         self.update_detached_tint2_target()
@@ -2371,6 +2512,12 @@ class SimpleLauncherPanel:
     def tile_at_panel_point(self, x, y):
         for tile in self.visible_tiles():
             if self.widget_contains_panel_point(tile, x, y):
+                translated = tile.translate_coordinates(self.win, 0, 0)
+                if translated is not None:
+                    tile_x, tile_y = translated
+                    alloc = tile.get_allocation()
+                    if not tile.point_in_triangle(x - tile_x, y - tile_y, alloc.width, alloc.height):
+                        continue
                 return tile
         return None
 
@@ -2447,57 +2594,8 @@ class SimpleLauncherPanel:
         executor_item.set_submenu(executor_menu)
         menu.append(executor_item)
 
-        tint2_menu = Gtk.Menu()
-        self.add_check_item(tint2_menu, "Mostrar tint2", self.show_tint2, self.set_show_tint2)
-        tint2_menu.append(Gtk.SeparatorMenuItem())
-        tint2_group = None
-        for label, profile in (("Default compacto", "default"), ("Chema compacto", "chema-compact")):
-            item = Gtk.RadioMenuItem.new_with_label_from_widget(tint2_group, label)
-            if tint2_group is None:
-                tint2_group = item
-            item.set_active(self.tint2_profile == profile)
-            item.connect("toggled", lambda check, value=profile: check.get_active() and self.set_tint2_profile(value))
-            tint2_menu.append(item)
-        tint2_menu.append(Gtk.SeparatorMenuItem())
-        placement_group = None
-        for label, placement in (
-            ("Como celda", "cell"),
-            ("Barra arriba", "top"),
-            ("Barra abajo", "bottom"),
-            ("Barra izquierda", "left"),
-            ("Barra derecha", "right"),
-        ):
-            item = Gtk.RadioMenuItem.new_with_label_from_widget(placement_group, label)
-            if placement_group is None:
-                placement_group = item
-            item.set_active(self.tint2_placement == placement)
-            item.connect("toggled", lambda check, value=placement: check.get_active() and self.set_tint2_placement(value))
-            tint2_menu.append(item)
-        tint2_menu.append(Gtk.SeparatorMenuItem())
-        units_group = None
-        for units in range(MIN_TINT2_SLOT_UNITS, MAX_TINT2_SLOT_UNITS + 1):
-            label = f"{units} espacios" if units != 1 else "1 espacio"
-            item = Gtk.RadioMenuItem.new_with_label_from_widget(units_group, label)
-            if units_group is None:
-                units_group = item
-            item.set_active(self.tint2_units == units)
-            item.connect("toggled", lambda check, value=units: check.get_active() and self.set_tint2_units(value))
-            tint2_menu.append(item)
-        tint2_menu.append(Gtk.SeparatorMenuItem())
-        take_systray_item = self.add_check_item(
-            tint2_menu,
-            "Tomar bandeja del sistema",
-            self.tint2_slot.should_take_systray(),
-            self.set_tint2_take_systray,
-        )
-        take_systray_item.set_sensitive(not self.tint2_slot.uses_split_chema_tint2())
-        restart_tint2_item = Gtk.MenuItem(label="Reiniciar tint2")
-        restart_tint2_item.set_sensitive(self.show_tint2)
-        restart_tint2_item.connect("activate", lambda *_args: self.restart_tint2_slot())
-        tint2_menu.append(restart_tint2_item)
-        tint2_item = Gtk.MenuItem(label="Tint2")
-        tint2_item.set_submenu(tint2_menu)
-        menu.append(tint2_item)
+        self.add_check_item(menu, "Mostrar bandeja del sistema", self.show_tint2, self.set_show_tint2)
+        self.add_check_item(menu, "Mostrar launchers", self.show_launchers, self.set_show_launchers)
 
         menu.append(Gtk.SeparatorMenuItem())
 
@@ -2513,6 +2611,19 @@ class SimpleLauncherPanel:
         order_item = Gtk.MenuItem(label="Orden")
         order_item.set_submenu(order_menu)
         menu.append(order_item)
+
+        layout_menu = Gtk.Menu()
+        layout_group = None
+        for label, mode in (("Rectangulos", "grid"), ("Triangulos", "triangles")):
+            item = Gtk.RadioMenuItem.new_with_label_from_widget(layout_group, label)
+            if layout_group is None:
+                layout_group = item
+            item.set_active(self.mirror_layout_mode == mode)
+            item.connect("toggled", lambda check, value=mode: check.get_active() and self.set_mirror_layout_mode(value))
+            layout_menu.append(item)
+        layout_item = Gtk.MenuItem(label="Forma de mirrors")
+        layout_item.set_submenu(layout_menu)
+        menu.append(layout_item)
 
         hover_menu = Gtk.Menu()
         for label, mode in (("Sin agrandar", "off"), ("Suave", "soft"), ("Medio", "medium"), ("Grande", "large")):
@@ -2658,6 +2769,16 @@ class SimpleLauncherPanel:
             self.schedule_idle_mode()
         self.save_state()
 
+    def set_mirror_layout_mode(self, mode):
+        self.mirror_layout_mode = normalize_mirror_layout_mode(mode)
+        for tile in self.tiles:
+            tile.set_triangle_orientation(None)
+        self.hovered_tile = None
+        self.current_columns = 0
+        self.current_rows = 0
+        self.fit_tiles_to_window()
+        self.save_state()
+
     def set_show_clock(self, active):
         self.show_clock = bool(active)
         self.clock_slot.set_visible(self.show_clock)
@@ -2681,6 +2802,16 @@ class SimpleLauncherPanel:
             self.tint2_slot.start()
         else:
             self.tint2_slot.stop()
+        self.current_columns = 0
+        self.current_rows = 0
+        self.fit_tiles_to_window()
+        self.save_state()
+
+    def set_show_launchers(self, active):
+        self.show_launchers = bool(active)
+        self.launcher_grid.set_visible(self.show_launchers)
+        if self.show_launchers:
+            self.launcher_grid.reload_launchers()
         self.current_columns = 0
         self.current_rows = 0
         self.fit_tiles_to_window()
