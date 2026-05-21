@@ -1550,8 +1550,6 @@ class SimpleLauncherPanel:
         slots.extend(self.executor_slots)
         if self.show_clock:
             slots.append(self.clock_slot)
-        if self.show_tint2 and self.tint2_in_cell():
-            slots.append(self.tint2_slot)
         return slots
 
     def tint2_in_cell(self):
@@ -1564,6 +1562,8 @@ class SimpleLauncherPanel:
         entries = [(tile, 1) for tile in self.visible_tiles()]
         entries.extend((slot, self.widget_slot_units(slot)) for slot in self.utility_slots())
         entries.append((self.filter_entry, 1))
+        if self.show_tint2 and self.tint2_in_cell():
+            entries.append((self.tint2_slot, self.widget_slot_units(self.tint2_slot)))
         return entries
 
     def widget_slot_units(self, widget):
