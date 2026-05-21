@@ -16,6 +16,7 @@ gi.require_version("Gio", "2.0")
 
 from gi.repository import Gdk, GdkPixbuf, GdkX11, Gio, GLib, Gtk, Pango, PangoCairo, Vte
 
+from .persistence import StateStore
 from .window_registry import WindowRegistry
 from .x11 import run_command
 
@@ -1636,9 +1637,14 @@ class SimpleLauncherPanel:
         tint2_profile="default",
         tint2_units=DEFAULT_TINT2_SLOT_UNITS,
         tint2_placement=DEFAULT_TINT2_PLACEMENT,
+        tint2_take_systray=False,
         registry=None,
+        state_store=None,
+        state=None,
     ):
         self.registry = registry or WindowRegistry()
+        self.state_store = state_store or StateStore()
+        self.state = state or self.state_store.load()
         self.excluded_window_ids = {int(item) for item in (excluded_window_ids or [])}
         self.own_window_id = None
         self.windows = windows
@@ -1682,6 +1688,7 @@ class SimpleLauncherPanel:
         self.hidden_by_idle = False
         self.restore_size = None
         self.restore_rect = None
+        self.pending_geometry = None
 
         self.win = Gtk.Window()
         self.win.set_title(title or "winmirror-launcher")
@@ -1701,7 +1708,14 @@ class SimpleLauncherPanel:
 
         target_width = max(240, min(len(windows) * self.tile_width, 980))
         target_height = max(48, self.tile_height)
+        saved_geometry = self.simple_panel_state().get("geometry", {})
+        target_width = clamp(saved_geometry.get("width"), MIN_TILE_WIDTH, MAX_TILE_WIDTH * 4, target_width)
+        target_height = clamp(saved_geometry.get("height"), MIN_TILE_HEIGHT, MAX_TILE_HEIGHT * 4, target_height)
         self.win.set_default_size(target_width, target_height)
+        saved_x = saved_geometry.get("x")
+        saved_y = saved_geometry.get("y")
+        if saved_x is not None and saved_y is not None:
+            self.win.move(int(saved_x), int(saved_y))
 
         self.grid = LooseFixed()
         self.grid.set_hexpand(True)
@@ -1717,7 +1731,7 @@ class SimpleLauncherPanel:
 
         self.clock_slot = ClockSlot(self.clock_mode)
         self.clock_slot.set_visible(self.show_clock)
-        self.tint2_slot = Tint2Slot(self.tint2_profile, owner=self)
+        self.tint2_slot = Tint2Slot(self.tint2_profile, take_systray=tint2_take_systray, owner=self)
         self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
         self.terminal_slots = []
         self.executor_slots = []
@@ -1757,6 +1771,55 @@ class SimpleLauncherPanel:
         if not self.sticky_workspaces or self.own_window_id is None:
             return
         run_command(["wmctrl", "-i", "-r", f"0x{self.own_window_id:x}", "-b", "add,sticky"])
+
+    def simple_panel_state(self):
+        panel_state = self.state.get("simple_panel")
+        if isinstance(panel_state, dict):
+            return panel_state
+        panel_state = {}
+        self.state["simple_panel"] = panel_state
+        return panel_state
+
+    def save_state(self):
+        geometry = self.pending_geometry or {}
+        if not geometry:
+            x, y = self.win.get_position()
+            width, height = self.win.get_size()
+            geometry = {"x": x, "y": y, "width": width, "height": height}
+        panel_state = self.simple_panel_state()
+        panel_state.update(
+            {
+                "tile_width": self.tile_width,
+                "tile_height": self.tile_height,
+                "fps": self.fps,
+                "show_title": self.show_title,
+                "show_close": self.show_close,
+                "show_workspace": self.show_workspace,
+                "hover_mode": self.hover_mode,
+                "hover_scale": self.hover_scale,
+                "show_borders": self.show_borders,
+                "order_mode": self.order_mode,
+                "label_mode": self.label_mode,
+                "sticky_workspaces": self.sticky_workspaces,
+                "idle_mode": self.idle_mode,
+                "idle_delay_ms": self.idle_delay_ms,
+                "frame_interval_seconds": self.frame_interval_seconds,
+                "show_clock": self.show_clock,
+                "clock_mode": self.clock_mode,
+                "show_tint2": self.show_tint2,
+                "tint2_profile": self.tint2_profile,
+                "tint2_units": self.tint2_units,
+                "tint2_placement": self.tint2_placement,
+                "tint2_take_systray": self.tint2_slot.take_systray,
+                "geometry": {
+                    "x": None if geometry.get("x") is None else int(geometry.get("x")),
+                    "y": None if geometry.get("y") is None else int(geometry.get("y")),
+                    "width": int(geometry.get("width") or self.win.get_size()[0]),
+                    "height": int(geometry.get("height") or self.win.get_size()[1]),
+                },
+            }
+        )
+        self.state_store.save(self.state)
 
     def filter_windows(self, windows):
         filtered = []
@@ -2544,6 +2607,10 @@ class SimpleLauncherPanel:
             restore_item.connect("activate", lambda *_args: self.restore_excluded_windows())
             menu.append(restore_item)
 
+        save_item = Gtk.MenuItem(label="Guardar configuracion")
+        save_item.connect("activate", lambda *_args: self.save_state())
+        menu.append(save_item)
+
         close_bar_item = Gtk.MenuItem(label="Cerrar barra")
         close_bar_item.connect("activate", lambda *_args: self.win.destroy())
         menu.append(close_bar_item)
@@ -2569,6 +2636,7 @@ class SimpleLauncherPanel:
             self.set_order_mode("manual", apply_order=False)
         for tile in self.tiles:
             tile.queue_draw()
+        self.save_state()
 
     def set_order_mode(self, mode, apply_order=True):
         self.order_mode = normalize_order_mode(mode)
@@ -2580,6 +2648,7 @@ class SimpleLauncherPanel:
             self.apply_order()
         for tile in self.tiles:
             tile.queue_draw()
+        self.save_state()
 
     def set_idle_mode(self, mode):
         self.idle_mode = normalize_idle_mode(mode)
@@ -2587,6 +2656,7 @@ class SimpleLauncherPanel:
             self.restore_from_idle()
         elif not self.pointer_inside_panel:
             self.schedule_idle_mode()
+        self.save_state()
 
     def set_show_clock(self, active):
         self.show_clock = bool(active)
@@ -2595,11 +2665,13 @@ class SimpleLauncherPanel:
         self.current_columns = 0
         self.current_rows = 0
         self.fit_tiles_to_window()
+        self.save_state()
 
     def set_clock_mode(self, mode):
         self.clock_mode = normalize_clock_mode(mode)
         self.clock_slot.set_mode(self.clock_mode)
         self.update_clock_timer()
+        self.save_state()
 
     def set_show_tint2(self, active):
         self.show_tint2 = bool(active)
@@ -2612,6 +2684,7 @@ class SimpleLauncherPanel:
         self.current_columns = 0
         self.current_rows = 0
         self.fit_tiles_to_window()
+        self.save_state()
 
     def set_tint2_profile(self, profile):
         self.tint2_profile = normalize_tint2_profile(profile)
@@ -2620,12 +2693,14 @@ class SimpleLauncherPanel:
         self.current_columns = 0
         self.current_rows = 0
         self.fit_tiles_to_window()
+        self.save_state()
 
     def set_tint2_units(self, units):
         self.tint2_units = normalize_tint2_units(units)
         self.current_columns = 0
         self.current_rows = 0
         self.fit_tiles_to_window()
+        self.save_state()
 
     def set_tint2_placement(self, placement):
         self.tint2_placement = effective_tint2_placement(self.tint2_profile, placement)
@@ -2635,10 +2710,12 @@ class SimpleLauncherPanel:
         self.current_columns = 0
         self.current_rows = 0
         self.fit_tiles_to_window()
+        self.save_state()
 
     def set_tint2_take_systray(self, active):
         self.tint2_slot.set_take_systray(active)
         self.fit_tiles_to_window()
+        self.save_state()
 
     def restart_tint2_slot(self):
         if not self.show_tint2:
@@ -2797,6 +2874,7 @@ class SimpleLauncherPanel:
         self.fit_tiles_to_window()
         for item in self.tiles:
             item.queue_draw()
+        self.save_state()
 
     def update_options(
         self,
@@ -2842,6 +2920,7 @@ class SimpleLauncherPanel:
         if not self.hover_expand or self.hover_scale <= 1.0:
             self.hovered_tile = None
         self.apply_tile_size_requests()
+        self.save_state()
 
     def set_hover_scale(self, scale):
         self.update_options(hover_scale=scale)
@@ -2855,17 +2934,20 @@ class SimpleLauncherPanel:
         for tile in self.tiles:
             tile.set_dimensions(self.tile_width, self.tile_height)
         self.fit_tiles_to_window()
+        self.save_state()
 
     def set_fps(self, fps):
         self.fps = max(0.0, min(12.0, float(fps)))
         self.frame_interval_seconds = None
         for tile in self.tiles:
             tile.set_fps(self.fps)
+        self.save_state()
 
     def set_frame_interval_seconds(self, seconds):
         self.frame_interval_seconds = seconds
         for tile in self.tiles:
             tile.set_frame_interval_seconds(seconds)
+        self.save_state()
 
     def refresh_all_tiles(self):
         for tile in self.tiles:
@@ -2882,7 +2964,13 @@ class SimpleLauncherPanel:
         self.excluded_window_ids.clear()
         self.reconcile_windows()
 
-    def on_configure_event(self, *_args):
+    def on_configure_event(self, _win, event):
+        self.pending_geometry = {
+            "x": event.x,
+            "y": event.y,
+            "width": event.width,
+            "height": event.height,
+        }
         self.fit_tiles_to_window()
         self.update_detached_tint2_target()
         for tile in self.tiles:
@@ -2905,6 +2993,7 @@ class SimpleLauncherPanel:
         if self.clock_source_id is not None:
             GLib.source_remove(self.clock_source_id)
             self.clock_source_id = None
+        self.save_state()
         self.tint2_slot.stop()
         if Gtk.main_level() > 0:
             Gtk.main_quit()

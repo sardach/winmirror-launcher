@@ -22,6 +22,36 @@ DEFAULT_STATE = {
         "width": 760,
         "height": 104,
     },
+    "simple_panel": {
+        "tile_width": 120,
+        "tile_height": 72,
+        "fps": 1.0,
+        "show_title": False,
+        "show_close": False,
+        "show_workspace": False,
+        "hover_mode": "off",
+        "hover_scale": 1.0,
+        "show_borders": False,
+        "order_mode": "last-used",
+        "label_mode": "title",
+        "sticky_workspaces": False,
+        "idle_mode": "off",
+        "idle_delay_ms": 700,
+        "frame_interval_seconds": None,
+        "show_clock": False,
+        "clock_mode": "date-time",
+        "show_tint2": False,
+        "tint2_profile": "default",
+        "tint2_units": 3,
+        "tint2_placement": "cell",
+        "tint2_take_systray": False,
+        "geometry": {
+            "x": None,
+            "y": None,
+            "width": 760,
+            "height": 104,
+        },
+    },
     "tile_order": [],
 }
 
@@ -77,6 +107,21 @@ class StateStore:
                 {k: geometry.get(k) for k in state["geometry"].keys() if k in geometry}
             )
 
+        simple_panel = data.get("simple_panel") if isinstance(data, dict) else None
+        if isinstance(simple_panel, dict):
+            state["simple_panel"].update(
+                {k: v for k, v in simple_panel.items() if k in state["simple_panel"] and k != "geometry"}
+            )
+            simple_geometry = simple_panel.get("geometry")
+            if isinstance(simple_geometry, dict):
+                state["simple_panel"]["geometry"].update(
+                    {
+                        k: simple_geometry.get(k)
+                        for k in state["simple_panel"]["geometry"].keys()
+                        if k in simple_geometry
+                    }
+                )
+
         tile_order = data.get("tile_order") if isinstance(data, dict) else None
         if isinstance(tile_order, list):
             state["tile_order"] = [int(item) for item in tile_order if isinstance(item, int)]
@@ -120,9 +165,22 @@ class StateStore:
     def save(self, state):
         payload = self._copy_default()
         payload.update({k: v for k, v in state.items() if k in payload})
+        payload["state_version"] = DEFAULT_STATE["state_version"]
         geometry = state.get("geometry") if isinstance(state.get("geometry"), dict) else {}
         payload["geometry"].update(
             {k: geometry.get(k) for k in payload["geometry"].keys() if k in geometry}
+        )
+        simple_panel = state.get("simple_panel") if isinstance(state.get("simple_panel"), dict) else {}
+        payload["simple_panel"].update(
+            {k: v for k, v in simple_panel.items() if k in payload["simple_panel"] and k != "geometry"}
+        )
+        simple_geometry = simple_panel.get("geometry") if isinstance(simple_panel.get("geometry"), dict) else {}
+        payload["simple_panel"]["geometry"].update(
+            {
+                k: simple_geometry.get(k)
+                for k in payload["simple_panel"]["geometry"].keys()
+                if k in simple_geometry
+            }
         )
         payload["tile_order"] = [int(item) for item in state.get("tile_order", [])]
 
@@ -145,5 +203,9 @@ class StateStore:
             "tile_height": DEFAULT_STATE["tile_height"],
             "panel_spacing": DEFAULT_STATE["panel_spacing"],
             "geometry": dict(DEFAULT_STATE["geometry"]),
+            "simple_panel": {
+                **{k: v for k, v in DEFAULT_STATE["simple_panel"].items() if k != "geometry"},
+                "geometry": dict(DEFAULT_STATE["simple_panel"]["geometry"]),
+            },
             "tile_order": list(DEFAULT_STATE["tile_order"]),
         }

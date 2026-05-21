@@ -64,7 +64,7 @@ def build_parser():
     parser.add_argument(
         "--fps",
         type=float,
-        default=1.0,
+        default=None,
         help="Frames por segundo del espejo (default: 1)",
     )
     parser.add_argument(
@@ -157,33 +157,37 @@ def build_parser():
     parser.add_argument(
         "--tile-width",
         type=int,
-        default=DEFAULT_TILE_WIDTH,
+        default=None,
         help=f"Ancho maximo de cada espejo en el panel simple (default: {DEFAULT_TILE_WIDTH})",
     )
     parser.add_argument(
         "--tile-height",
         type=int,
-        default=DEFAULT_TILE_HEIGHT,
+        default=None,
         help=f"Alto maximo de cada espejo en el panel simple (default: {DEFAULT_TILE_HEIGHT})",
     )
     parser.add_argument(
         "--show-title",
         action="store_true",
+        default=None,
         help="Muestra el titulo de la ventana sobre cada espejo del panel simple",
     )
     parser.add_argument(
         "--show-close",
         action="store_true",
+        default=None,
         help="Muestra una x para cerrar la ventana real en cada espejo del panel simple",
     )
     parser.add_argument(
         "--show-workspace",
         action="store_true",
+        default=None,
         help="Muestra el numero de escritorio/workspace en cada espejo del panel simple",
     )
     parser.add_argument(
         "--hover-expand",
         action="store_true",
+        default=None,
         help="Agranda temporalmente el espejo al pasar el cursor",
     )
     parser.add_argument(
@@ -201,35 +205,37 @@ def build_parser():
     parser.add_argument(
         "--show-borders",
         action="store_true",
+        default=None,
         help="Muestra bordes finos entre ventanas en el panel simple",
     )
     parser.add_argument(
         "--label-mode",
         choices=["title", "app"],
-        default="title",
+        default=None,
         help="Texto del overlay: titulo dinamico o app/ejecutable (default: title)",
     )
     parser.add_argument(
         "--sticky-workspaces",
         action="store_true",
+        default=None,
         help="Hace que la barra del panel simple siga en todos los escritorios",
     )
     parser.add_argument(
         "--idle-mode",
         choices=["off", "collapse", "hide"],
-        default="off",
+        default=None,
         help="Comportamiento del panel simple cuando no tiene cursor",
     )
     parser.add_argument(
         "--idle-delay-ms",
         type=int,
-        default=700,
+        default=None,
         help="Demora antes de reducir/ocultar el panel simple (default: 700)",
     )
     parser.add_argument(
         "--order",
         choices=["last-used", "name", "manual"],
-        default="last-used",
+        default=None,
         help="Orden inicial del panel simple (default: last-used)",
     )
     parser.add_argument(
@@ -242,18 +248,19 @@ def build_parser():
     parser.add_argument(
         "--show-tint2",
         action="store_true",
+        default=None,
         help="Muestra una celda tint2 antes del buscador",
     )
     parser.add_argument(
         "--tint2-profile",
         choices=sorted(TINT2_PROFILES),
-        default="default",
+        default=None,
         help="Perfil tint2 inicial para la celda integrada",
     )
     parser.add_argument(
         "--tint2-units",
         type=int,
-        default=DEFAULT_TINT2_SLOT_UNITS,
+        default=None,
         help=(
             f"Cantidad de espacios que ocupa tint2 "
             f"({MIN_TINT2_SLOT_UNITS}-{MAX_TINT2_SLOT_UNITS}, default: {DEFAULT_TINT2_SLOT_UNITS})"
@@ -262,7 +269,7 @@ def build_parser():
     parser.add_argument(
         "--tint2-placement",
         choices=sorted(TINT2_PLACEMENTS),
-        default=DEFAULT_TINT2_PLACEMENT,
+        default=None,
         help="Ubicacion de tint2: celda interna o barra adosada al panel",
     )
     return parser
@@ -270,10 +277,10 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv or sys.argv[1:])
-    args.tint2_placement = effective_tint2_placement(args.tint2_profile, args.tint2_placement)
     registry = WindowRegistry()
     state_store = StateStore()
     state = state_store.load()
+    fps = 1.0 if args.fps is None else args.fps
 
     if args.list:
         windows = registry.list_windows()
@@ -298,7 +305,7 @@ def main(argv=None):
             raise RuntimeError("No hay ventanas disponibles para el smoke multi.")
         MultiMirrorSmokeWindow(
             windows=windows,
-            fps=args.fps,
+            fps=fps,
             title=args.title,
             always_on_top=args.always_on_top,
             no_decorations=args.no_decorations,
@@ -314,31 +321,54 @@ def main(argv=None):
         windows = registry.list_windows()
         if not windows:
             raise RuntimeError("No hay ventanas disponibles para el panel.")
+        simple_state = state.get("simple_panel") if isinstance(state.get("simple_panel"), dict) else {}
+        tint2_profile = args.tint2_profile or simple_state.get("tint2_profile", "default")
+        tint2_placement = effective_tint2_placement(
+            tint2_profile,
+            args.tint2_placement or simple_state.get("tint2_placement", DEFAULT_TINT2_PLACEMENT),
+        )
+        hover_mode = args.hover_mode if args.hover_mode is not None else simple_state.get("hover_mode")
+        hover_expand = args.hover_expand if args.hover_expand is not None else bool(hover_mode and hover_mode != "off")
         SimpleLauncherPanel(
             windows=windows,
-            tile_width=args.tile_width,
-            tile_height=args.tile_height,
-            fps=min(args.fps, 12.0),
-            frame_interval_seconds=args.frame_interval_seconds,
+            tile_width=args.tile_width if args.tile_width is not None else simple_state.get("tile_width", DEFAULT_TILE_WIDTH),
+            tile_height=args.tile_height if args.tile_height is not None else simple_state.get("tile_height", DEFAULT_TILE_HEIGHT),
+            fps=min(args.fps if args.fps is not None else simple_state.get("fps", 1.0), 12.0),
+            frame_interval_seconds=(
+                args.frame_interval_seconds
+                if args.frame_interval_seconds is not None
+                else simple_state.get("frame_interval_seconds")
+            ),
             title=args.title,
-            show_title=args.show_title,
-            show_close=args.show_close,
-            show_workspace=args.show_workspace,
-            hover_expand=args.hover_expand,
-            hover_mode=args.hover_mode,
-            hover_scale=args.hover_scale,
-            show_borders=args.show_borders,
-            order_mode=args.order,
-            label_mode=args.label_mode,
-            sticky_workspaces=args.sticky_workspaces,
-            idle_mode=args.idle_mode,
-            idle_delay_ms=args.idle_delay_ms,
+            show_title=args.show_title if args.show_title is not None else simple_state.get("show_title", False),
+            show_close=args.show_close if args.show_close is not None else simple_state.get("show_close", False),
+            show_workspace=(
+                args.show_workspace if args.show_workspace is not None else simple_state.get("show_workspace", False)
+            ),
+            hover_expand=hover_expand,
+            hover_mode=hover_mode,
+            hover_scale=args.hover_scale if args.hover_scale is not None else simple_state.get("hover_scale"),
+            show_borders=args.show_borders if args.show_borders is not None else simple_state.get("show_borders", False),
+            order_mode=args.order or simple_state.get("order_mode", "last-used"),
+            label_mode=args.label_mode or simple_state.get("label_mode", "title"),
+            sticky_workspaces=(
+                args.sticky_workspaces
+                if args.sticky_workspaces is not None
+                else simple_state.get("sticky_workspaces", False)
+            ),
+            idle_mode=args.idle_mode or simple_state.get("idle_mode", "off"),
+            idle_delay_ms=args.idle_delay_ms if args.idle_delay_ms is not None else simple_state.get("idle_delay_ms", 700),
             excluded_window_ids=args.exclude_window,
-            show_tint2=args.show_tint2,
-            tint2_profile=args.tint2_profile,
-            tint2_units=args.tint2_units,
-            tint2_placement=args.tint2_placement,
+            show_clock=simple_state.get("show_clock", False),
+            clock_mode=simple_state.get("clock_mode", "date-time"),
+            show_tint2=args.show_tint2 if args.show_tint2 is not None else simple_state.get("show_tint2", False),
+            tint2_profile=tint2_profile,
+            tint2_units=args.tint2_units if args.tint2_units is not None else simple_state.get("tint2_units", DEFAULT_TINT2_SLOT_UNITS),
+            tint2_placement=tint2_placement,
             registry=registry,
+            tint2_take_systray=simple_state.get("tint2_take_systray", False),
+            state_store=state_store,
+            state=state,
         )
         Gtk.main()
         return 0
@@ -382,7 +412,7 @@ def main(argv=None):
 
         panel = LauncherPanelWindow(
             windows=ordered_windows,
-            fps=args.fps,
+            fps=fps,
             title=args.title,
             always_on_top=args.always_on_top,
             no_decorations=args.no_decorations,
@@ -424,7 +454,7 @@ def main(argv=None):
 
     SimpleMirrorWindow(
         window_info=window_info,
-        fps=args.fps,
+        fps=fps,
         title=args.title,
         always_on_top=args.always_on_top,
         no_decorations=args.no_decorations,
