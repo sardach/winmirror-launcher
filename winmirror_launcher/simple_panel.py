@@ -1530,25 +1530,31 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         width = max(1, alloc.width)
         height = max(1, alloc.height)
 
-        clear_background(cr)
+        is_triangle = self.triangle_orientation in {"up", "down"}
+        if not is_triangle:
+            clear_background(cr)
+
         cr.set_source_rgb(0.02, 0.02, 0.02)
-        if self.triangle_orientation in {"up", "down"}:
+        if is_triangle:
             self.triangle_path(cr, width, height)
         else:
             cr.rectangle(0, 0, width, height)
         cr.fill()
 
-        if self.triangle_orientation in {"up", "down"}:
+        if is_triangle:
             cr.save()
             self.triangle_path(cr, width, height)
             cr.clip()
 
         if self.current_pixbuf is None:
             self.draw_placeholder(widget, cr, width, height)
-            if self.triangle_orientation in {"up", "down"}:
+            if is_triangle:
+                self.draw_overlays(widget, cr, width, height)
                 cr.restore()
             if self.show_borders:
                 self.draw_border(cr, width, height)
+            if not is_triangle:
+                self.draw_overlays(widget, cr, width, height)
             return False
 
         src_w = self.current_pixbuf.get_width()
@@ -1570,11 +1576,13 @@ class SimpleMirrorTile(Gtk.DrawingArea):
             cr.set_source_rgba(1.0, 1.0, 1.0, min(0.18, 0.04 + ((self.hover_scale - 1.0) * 0.08)))
             cr.rectangle(0, 0, width, height)
             cr.fill()
-        if self.triangle_orientation in {"up", "down"}:
+        if is_triangle:
+            self.draw_overlays(widget, cr, width, height)
             cr.restore()
         if self.show_borders:
             self.draw_border(cr, width, height)
-        self.draw_overlays(widget, cr, width, height)
+        if not is_triangle:
+            self.draw_overlays(widget, cr, width, height)
         return False
 
     def draw_border(self, cr, width, height):
@@ -2274,55 +2282,92 @@ class SimpleLauncherPanel:
                 best = (score, columns, rows, tile_width, tile_height)
         return best[1], best[2], max(1, int(best[3])), max(1, int(best[4]))
 
+    def triangle_entry_slot_units(self, widget, units):
+        if isinstance(widget, SimpleMirrorTile):
+            return 1
+        return max(2, int(units) * 2)
+
+    def iter_triangle_layout_positions(self, entries, cell_columns):
+        cell_columns = max(1, int(cell_columns))
+        slots_per_row = cell_columns * 2
+        cursor = 0
+        for widget, units in entries:
+            if isinstance(widget, SimpleMirrorTile):
+                yield widget, cursor, 1
+                cursor += 1
+                continue
+
+            span_cells = max(1, min(int(units), cell_columns))
+            if cursor % 2:
+                cursor += 1
+            column = (cursor // 2) % cell_columns
+            if column + span_cells > cell_columns:
+                cursor += slots_per_row - (cursor % slots_per_row)
+            yield widget, cursor, span_cells * 2
+            cursor += span_cells * 2
+
+    def triangle_rows_for_entries(self, entries, cell_columns):
+        rows = 1
+        for _widget, cursor, span_slots in self.iter_triangle_layout_positions(entries, cell_columns):
+            end_slot = cursor + max(1, int(span_slots)) - 1
+            rows = max(rows, (end_slot // 2) // max(1, int(cell_columns)) + 1)
+        return rows
+
+    def choose_triangle_flow_shape(self, width, height, entries):
+        if not entries:
+            return 1, 1, max(1, int(width)), max(1, int(height))
+        width = max(1, int(width))
+        height = max(1, int(height))
+        slot_count = sum(self.triangle_entry_slot_units(widget, units) for widget, units in entries)
+        max_cells = max(1, int(math.ceil(slot_count / 2.0)))
+        best = None
+        for cell_columns in range(1, max_cells + 1):
+            rows = self.triangle_rows_for_entries(entries, cell_columns)
+            tile_width = width / cell_columns
+            tile_height = height / rows
+            visible_area = min(tile_width, MAX_TILE_WIDTH) * min(tile_height, MAX_TILE_HEIGHT)
+            aspect = tile_width / max(1.0, tile_height)
+            aspect_penalty = abs(math.log(max(0.1, aspect / 1.35)))
+            empty_slots = (cell_columns * rows * 2) - slot_count
+            score = visible_area - (visible_area * aspect_penalty * 0.18) - (empty_slots * 20)
+            if best is None or score > best[0]:
+                best = (score, cell_columns, rows, tile_width, tile_height)
+        return best[1], best[2], max(1, int(best[3])), max(1, int(best[4]))
+
     def fit_triangular_layout(self, width, height):
         visible_tiles = self.visible_tiles()
         for tile in self.tiles:
             tile.set_visible(tile in visible_tiles)
             tile.set_triangle_orientation(None)
-        entries = [(self.filter_entry, 1)]
-        entries.extend((slot, self.widget_slot_units(slot)) for slot in self.utility_slots())
-        if self.show_tint2 and self.tint2_in_cell():
-            entries.append((self.tint2_slot, self.widget_slot_units(self.tint2_slot)))
-        if self.show_launchers:
-            entries.append((self.launcher_grid, self.widget_slot_units(self.launcher_grid)))
+        entries = self.layout_entries()
 
-        utility_height = 0
-        utility_columns = 1
-        if entries:
-            utility_columns = max(1, int(width // max(1, self.tile_width)))
-            utility_rows = self.layout_rows_for_entries(entries, utility_columns)
-            utility_height = min(height // 2, utility_rows * max(MIN_TILE_HEIGHT, min(MAX_TILE_HEIGHT, self.tile_height)))
-
-        triangle_height = max(MIN_TILE_HEIGHT, height - utility_height)
-        columns, rows, tile_width, tile_height = self.choose_triangle_shape(width, triangle_height, len(visible_tiles))
-        self.current_columns = columns
+        columns, rows, tile_width, tile_height = self.choose_triangle_flow_shape(width, height, entries)
+        self.current_columns = columns * 2
         self.current_rows = rows
         self.tile_width = clamp(tile_width, MIN_TILE_WIDTH, MAX_TILE_WIDTH, self.tile_width)
         self.tile_height = clamp(tile_height, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, self.tile_height)
 
-        for index, tile in enumerate(visible_tiles):
-            row = index // columns
-            column = index % columns
-            x = int(round(column * self.tile_width * 0.5))
+        for widget, cursor, span_slots in self.iter_triangle_layout_positions(entries, columns):
+            cell_index = cursor // 2
+            row = cell_index // columns
+            column = cell_index % columns
+            x = int(round(column * self.tile_width))
             y = int(round(row * self.tile_height))
-            tile.set_triangle_orientation("up" if (row + column) % 2 == 0 else "down")
-            tile.set_layout_size(self.tile_width, self.tile_height)
-            self.grid.move(tile, x, y)
-            tile.show()
+            if isinstance(widget, SimpleMirrorTile):
+                widget.set_triangle_orientation("up" if cursor % 2 == 0 else "down")
+                widget.set_layout_size(self.tile_width, self.tile_height)
+                self.grid.move(widget, x, y)
+                widget.show()
+                continue
 
-        if entries:
-            y_offset = rows * self.tile_height
-            for widget, index, span in self.iter_layout_positions(entries, utility_columns):
-                column = index % utility_columns
-                row = index // utility_columns
-                x = column * self.tile_width
-                width_px = self.tile_width * max(1, min(span, utility_columns - column))
-                widget.set_size_request(max(1, int(width_px)), max(1, int(self.tile_height)))
-                if isinstance(widget, LauncherGrid):
-                    widget.set_layout_size(width_px, self.tile_height)
-                self.grid.move(widget, int(x), int(y_offset + row * self.tile_height))
-                if widget is self.tint2_slot:
-                    self.update_tint2_target_rect(int(x), int(y_offset + row * self.tile_height), width_px, self.tile_height)
+            span_cells = max(1, int(math.ceil(span_slots / 2.0)))
+            width_px = self.tile_width * span_cells
+            widget.set_size_request(max(1, int(width_px)), max(1, int(self.tile_height)))
+            if isinstance(widget, LauncherGrid):
+                widget.set_layout_size(width_px, self.tile_height)
+            self.grid.move(widget, x, y)
+            if widget is self.tint2_slot:
+                self.update_tint2_target_rect(x, y, width_px, self.tile_height)
         self.clock_slot.set_visible(self.show_clock)
         self.launcher_grid.set_visible(self.show_launchers)
         self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
