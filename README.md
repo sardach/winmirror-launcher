@@ -123,6 +123,8 @@ Cuando esta activo sin tint2, el reloj se coloca justo antes del buscador. Si ti
 
 La opcion `Tint2` permite activar una celda de ancho configurable o una barra adosada al panel. Por defecto funciona como celda interna y ocupa 3 espacios del panel. En modo celda, los launchers se dibujan dentro de winmirror como una cuadricula real y no se lanza tint2. En modo barra adosada, winmirror genera un archivo temporal de configuracion, lanza `tint2` con ese perfil y recoloca su ventana junto al panel.
 
+El perfil `chema-compact` fuerza automaticamente la ubicacion `bottom` si se intenta usar como celda, porque la bandeja del sistema X11 requiere un host tint2 real y no puede funcionar dentro de la cuadricula GTK.
+
 Perfiles disponibles:
 
 - `default`: configuracion generica con menu de aplicaciones si esta disponible, mostrar escritorio, `gmrun`, taskbar compacta y bandeja del sistema.

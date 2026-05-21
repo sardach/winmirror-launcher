@@ -21,6 +21,7 @@ from .simple_panel import (
     TINT2_PLACEMENTS,
     TINT2_PROFILES,
     SimpleLauncherPanel,
+    effective_tint2_placement,
 )
 from .smoke import MultiMirrorSmokeWindow
 from .window_model import WindowInfo
@@ -269,6 +270,7 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv or sys.argv[1:])
+    args.tint2_placement = effective_tint2_placement(args.tint2_profile, args.tint2_placement)
     registry = WindowRegistry()
     state_store = StateStore()
     state = state_store.load()

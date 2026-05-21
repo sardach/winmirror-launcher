@@ -120,6 +120,13 @@ def normalize_tint2_placement(value):
     return value if value in TINT2_PLACEMENTS else DEFAULT_TINT2_PLACEMENT
 
 
+def effective_tint2_placement(profile, placement):
+    placement = normalize_tint2_placement(placement)
+    if normalize_tint2_profile(profile) == "chema-compact" and placement == "cell":
+        return "bottom"
+    return placement
+
+
 def read_current_tint2_launchers():
     candidates = [
         Path.home() / ".config" / "tint2" / "tint2-sessionfile",
@@ -1502,7 +1509,7 @@ class SimpleLauncherPanel:
         self.show_tint2 = bool(show_tint2)
         self.tint2_profile = normalize_tint2_profile(tint2_profile)
         self.tint2_units = normalize_tint2_units(tint2_units)
-        self.tint2_placement = normalize_tint2_placement(tint2_placement)
+        self.tint2_placement = effective_tint2_placement(self.tint2_profile, tint2_placement)
         self.window_refresh_source_id = None
         self.active_window_source_id = None
         self.idle_source_id = None
@@ -2446,6 +2453,7 @@ class SimpleLauncherPanel:
 
     def set_tint2_profile(self, profile):
         self.tint2_profile = normalize_tint2_profile(profile)
+        self.tint2_placement = effective_tint2_placement(self.tint2_profile, self.tint2_placement)
         self.tint2_slot.set_profile(self.tint2_profile)
         self.current_columns = 0
         self.current_rows = 0
