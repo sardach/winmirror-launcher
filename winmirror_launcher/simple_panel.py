@@ -1549,7 +1549,10 @@ class SimpleMirrorTile(Gtk.DrawingArea):
 
         src_w = self.current_pixbuf.get_width()
         src_h = self.current_pixbuf.get_height()
-        scale = min(float(width) / src_w, float(height) / src_h)
+        if self.triangle_orientation in {"up", "down"}:
+            scale = max(float(width) / src_w, float(height) / src_h)
+        else:
+            scale = min(float(width) / src_w, float(height) / src_h)
         draw_w = src_w * scale
         draw_h = src_h * scale
         off_x = (width - draw_w) / 2.0
@@ -1567,10 +1570,12 @@ class SimpleMirrorTile(Gtk.DrawingArea):
             cr.rectangle(0, 0, width, height)
             cr.fill()
         if self.triangle_orientation in {"up", "down"}:
+            self.draw_overlays(widget, cr, width, height)
             cr.restore()
+        else:
+            self.draw_overlays(widget, cr, width, height)
         if self.show_borders:
             self.draw_border(cr, width, height)
-        self.draw_overlays(widget, cr, width, height)
         return False
 
     def draw_border(self, cr, width, height):
