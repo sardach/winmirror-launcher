@@ -225,6 +225,17 @@ def read_current_tint2_option_block(prefixes):
     return "\n".join(output)
 
 
+def is_start_menu_button(block):
+    marker_text = block.casefold()
+    return "mb-jgtools main" in marker_text or "application launcher" in marker_text
+
+
+def move_start_menu_button_right(button_blocks):
+    menu_blocks = [block for block in button_blocks if is_start_menu_button(block)]
+    other_blocks = [block for block in button_blocks if not is_start_menu_button(block)]
+    return other_blocks + menu_blocks
+
+
 def build_tint2_config(profile, width=240, height=48, orientation="horizontal", placement="cell"):
     profile = normalize_tint2_profile(profile)
     orientation = "vertical" if orientation == "vertical" else "horizontal"
@@ -247,24 +258,26 @@ def build_tint2_config(profile, width=240, height=48, orientation="horizontal", 
     option_blocks = []
     if profile == "chema-compact":
         button_blocks = read_current_tint2_plugin_blocks("button")
+        button_blocks = move_start_menu_button_right(button_blocks)
         execp_blocks = read_current_tint2_plugin_blocks("execp")
         battery_block = read_current_tint2_option_block(("battery_", "bat1_", "bat2_", "ac_"))
         cell_mode = placement == "cell"
         if cell_mode:
-            plugin_blocks.extend(button_blocks[:3])
+            compact_buttons = button_blocks[:2]
+            if button_blocks and button_blocks[-1] not in compact_buttons:
+                compact_buttons.append(button_blocks[-1])
+            plugin_blocks.extend(compact_buttons)
             plugin_blocks.extend(execp_blocks[:1])
             option_blocks.extend(block for block in (battery_block,) if block)
-            launcher_lines = []
-            panel_items = "PPEPSB"
+            panel_items = "PLFEPSBP"
         else:
             plugin_blocks.extend(button_blocks)
             plugin_blocks.extend(execp_blocks)
             option_blocks.extend(block for block in (battery_block,) if block)
             panel_items = "PPPPPPLFEPSBEPP" if button_blocks or execp_blocks else "LSB"
-        if not cell_mode:
-            for line in read_current_tint2_launchers():
-                if line not in launcher_lines:
-                    launcher_lines.append(line)
+        for line in read_current_tint2_launchers():
+            if line not in launcher_lines:
+                launcher_lines.append(line)
         taskbar_lines = [
             "taskbar_mode = multi_desktop",
             "taskbar_hide_if_empty = 1",
