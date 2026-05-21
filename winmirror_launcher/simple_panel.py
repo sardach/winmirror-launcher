@@ -732,14 +732,18 @@ class Tint2Slot(Gtk.Box):
         self.orientation = "horizontal"
         self.config_orientation = None
         self.window_id = None
+        self.reparented_window_id = None
+        self.move_attempts = 0
         self.suspended_tint2_commands = []
         self.set_size_request(DEFAULT_TILE_WIDTH * DEFAULT_TINT2_SLOT_UNITS, DEFAULT_TILE_HEIGHT)
 
         self.launcher_grid = LauncherGrid()
+        self.tray_socket = Gtk.Socket()
         self.label = Gtk.Label(label="tint2")
         self.label.set_xalign(0.5)
         self.label.set_yalign(0.5)
         self.pack_start(self.launcher_grid, True, True, 0)
+        self.pack_start(self.tray_socket, False, False, 0)
         self.pack_start(self.label, False, False, 0)
 
     def uses_launcher_grid(self):
@@ -747,11 +751,17 @@ class Tint2Slot(Gtk.Box):
 
     def update_child_visibility(self):
         use_grid = self.uses_launcher_grid()
-        self.launcher_grid.set_visible(use_grid)
-        self.label.set_visible(not use_grid)
+        if use_grid:
+            self.launcher_grid.show()
+            self.tray_socket.hide()
+            self.label.hide()
+        else:
+            self.launcher_grid.hide()
+            self.tray_socket.hide()
+            self.label.show()
 
     def uses_external_tint2(self):
-        return not self.uses_launcher_grid()
+        return True
 
     def set_profile(self, profile):
         self.profile = normalize_tint2_profile(profile)
@@ -798,7 +808,7 @@ class Tint2Slot(Gtk.Box):
             return
         self.label.set_text("tint2")
         self.update_child_visibility()
-        self.schedule_move()
+        self.schedule_move(force=True)
 
     def suspend_external_tint2_panels(self):
         proc = subprocess.run(["pgrep", "-af", "tint2"], text=True, capture_output=True, check=False)
@@ -879,6 +889,7 @@ class Tint2Slot(Gtk.Box):
             self.kill_tint2_processes_for_config(config_path)
         self.process = None
         self.window_id = None
+        self.reparented_window_id = None
         if self.config_path is not None:
             try:
                 self.config_path.unlink()
@@ -913,11 +924,9 @@ class Tint2Slot(Gtk.Box):
         width = max(1, int(width))
         height = max(1, int(height))
         if self.uses_launcher_grid():
-            self.launcher_grid.set_layout_size(width, height)
-            self.target_rect = None
-            if self.process is not None or self.config_path is not None:
-                self.stop()
-            return
+            tray_height = max(18, min(height, max(18, int(round(height * 0.32)))))
+            self.launcher_grid.set_layout_size(width, max(1, height - tray_height))
+            self.target_rect = (int(x), int(y + height - tray_height), width, tray_height)
         else:
             self.target_rect = (int(x), int(y), width, height)
         if (
@@ -932,21 +941,61 @@ class Tint2Slot(Gtk.Box):
         ):
             self.restart()
             return
-        self.schedule_move()
+        self.schedule_move(force=True)
 
-    def schedule_move(self):
+    def schedule_move(self, force=False):
+        if force and self.move_source_id is not None:
+            GLib.source_remove(self.move_source_id)
+            self.move_source_id = None
         if self.move_source_id is None:
+            self.move_attempts = 0
             self.move_source_id = GLib.timeout_add(120, self.move_tint2_window)
 
     def move_tint2_window(self):
-        self.move_source_id = None
         if self.process is None or self.process.poll() is not None or self.target_rect is None:
+            self.move_source_id = None
             return False
         window_id = self.window_id or self.find_tint2_window_id()
         if window_id is None:
-            self.schedule_move()
+            self.move_attempts += 1
+            if self.move_attempts < 80:
+                return True
+            self.move_source_id = None
             return False
         x, y, width, height = self.target_rect
+        if self.uses_launcher_grid():
+            if self.owner is None or self.owner.win.get_window() is None:
+                self.move_attempts += 1
+                if self.move_attempts < 80:
+                    return True
+                self.move_source_id = None
+                return False
+            try:
+                parent_id = str(int(self.owner.win.get_window().get_xid()))
+            except AttributeError:
+                parent_id = str(int(self.owner.own_window_id or 0))
+            if self.reparented_window_id != window_id:
+                subprocess.run(
+                    ["xdotool", "windowreparent", window_id, parent_id],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                self.reparented_window_id = window_id
+            subprocess.run(
+                ["wmctrl", "-ir", window_id, "-b", "add,skip_taskbar,skip_pager"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            subprocess.run(
+                ["xdotool", "windowmove", window_id, "0", "0", "windowsize", window_id, str(width), str(height)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            self.move_source_id = None
+            return False
         subprocess.run(
             ["wmctrl", "-ir", window_id, "-b", "add,skip_taskbar,skip_pager"],
             stdout=subprocess.DEVNULL,
@@ -965,19 +1014,37 @@ class Tint2Slot(Gtk.Box):
             stderr=subprocess.DEVNULL,
             check=False,
         )
+        self.move_source_id = None
         return False
 
     def find_tint2_window_id(self):
         if self.process is None:
             return None
         proc = subprocess.run(["wmctrl", "-lp"], text=True, capture_output=True, check=False)
-        if proc.returncode != 0:
-            return None
         pid = str(self.process.pid)
-        for line in proc.stdout.splitlines():
-            parts = line.split(None, 4)
-            if len(parts) >= 3 and parts[2] == pid:
-                self.window_id = parts[0]
+        if proc.returncode == 0:
+            for line in proc.stdout.splitlines():
+                parts = line.split(None, 4)
+                if len(parts) >= 3 and parts[2] == pid:
+                    self.window_id = parts[0]
+                    return self.window_id
+        proc = subprocess.run(["xdotool", "search", "--pid", pid], text=True, capture_output=True, check=False)
+        if proc.returncode == 0:
+            for line in proc.stdout.splitlines():
+                window_id = line.strip()
+                if window_id:
+                    self.window_id = window_id
+                    return self.window_id
+        proc = subprocess.run(
+            ["xdotool", "search", "--name", "^winmirror-launcher-tint2$"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode == 0:
+            matches = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            if matches:
+                self.window_id = matches[-1]
                 return self.window_id
         return None
 
@@ -1658,6 +1725,10 @@ class SimpleLauncherPanel:
     def update_tint2_target_rect(self, x, y, width, height):
         gdk_window = self.win.get_window()
         if gdk_window is None:
+            return
+        if self.tint2_slot.uses_launcher_grid():
+            self.tint2_slot.set_orientation("horizontal")
+            self.tint2_slot.set_target_rect(x, y, width, height)
             return
         origin = gdk_window.get_origin()
         origin_x, origin_y = origin[-2], origin[-1]
