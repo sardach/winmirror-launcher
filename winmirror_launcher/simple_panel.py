@@ -11,8 +11,9 @@ gi.require_version("GdkX11", "3.0")
 gi.require_version("Pango", "1.0")
 gi.require_version("PangoCairo", "1.0")
 gi.require_version("Vte", "2.91")
+gi.require_version("Gio", "2.0")
 
-from gi.repository import Gdk, GdkX11, GLib, Gtk, Pango, PangoCairo, Vte
+from gi.repository import Gdk, GdkX11, Gio, GLib, Gtk, Pango, PangoCairo, Vte
 
 from .window_registry import WindowRegistry
 from .x11 import run_command
@@ -146,6 +147,36 @@ def read_current_tint2_launchers():
         if launchers:
             break
     return launchers
+
+
+def launcher_path_from_line(line):
+    _key, _sep, value = line.partition("=")
+    value = value.strip()
+    if not value:
+        return None
+    path = Path(os.path.expanduser(value))
+    if path.is_absolute() and path.exists():
+        return path
+    for base in [
+        Path.home() / ".local" / "share" / "applications",
+        Path("/usr/local/share/applications"),
+        Path("/usr/share/applications"),
+    ]:
+        candidate = base / value
+        if candidate.exists():
+            return candidate
+    return path if path.exists() else None
+
+
+def desktop_entry_value(path, key):
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            stripped = line.strip()
+            if stripped.startswith(f"{key}="):
+                return stripped.partition("=")[2].strip()
+    except OSError:
+        return ""
+    return ""
 
 
 def existing_launcher_line(path):
@@ -310,16 +341,18 @@ def build_tint2_config(profile, width=240, height=48, orientation="horizontal", 
             plugin_blocks.extend(compact_buttons)
             plugin_blocks.extend(execp_blocks[:1])
             option_blocks.extend(block for block in (battery_block,) if block)
-            panel_items = tint2_items_for(len(compact_buttons), min(1, len(execp_blocks)), bool(launcher_lines), bool(battery_block))
+            launcher_lines = []
+            panel_items = tint2_items_for(len(compact_buttons), min(1, len(execp_blocks)), False, bool(battery_block))
         else:
             plugin_blocks.extend(button_blocks)
             plugin_blocks.extend(execp_blocks)
             option_blocks.extend(block for block in (battery_block,) if block)
             panel_items = tint2_items_for(len(button_blocks), len(execp_blocks), bool(launcher_lines), bool(battery_block))
-        for line in read_current_tint2_launchers():
-            if line not in launcher_lines:
-                launcher_lines.append(line)
-        launcher_lines = order_tint2_launchers(launcher_lines)
+        if not cell_mode:
+            for line in read_current_tint2_launchers():
+                if line not in launcher_lines:
+                    launcher_lines.append(line)
+            launcher_lines = order_tint2_launchers(launcher_lines)
         taskbar_lines = [
             "taskbar_mode = multi_desktop",
             "taskbar_hide_if_empty = 1",
@@ -560,6 +593,127 @@ class CommandRunnerSlot(Gtk.Box):
         return True
 
 
+class LauncherGrid(Gtk.DrawingArea):
+    def __init__(self):
+        super().__init__()
+        self.launchers = []
+        self.icon_cache = {}
+        self.cells = []
+        self.set_no_show_all(False)
+        self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.POINTER_MOTION_MASK)
+        self.connect("draw", self.on_draw)
+        self.connect("button-press-event", self.on_button_press)
+        self.reload_launchers()
+
+    def reload_launchers(self):
+        items = []
+        for line in order_tint2_launchers(standard_tint2_launchers() + read_current_tint2_launchers()):
+            path = launcher_path_from_line(line)
+            if path is None:
+                continue
+            name = desktop_entry_value(path, "Name") or path.stem
+            icon = desktop_entry_value(path, "Icon")
+            command = desktop_entry_value(path, "Exec")
+            if command:
+                items.append({"path": path, "name": name, "icon": icon, "command": command})
+        self.launchers = items
+        self.icon_cache.clear()
+        self.queue_draw()
+
+    def set_layout_size(self, width, height):
+        self.set_size_request(max(1, int(width)), max(1, int(height)))
+        self.queue_draw()
+
+    def do_get_preferred_width(self):
+        return 1, 1
+
+    def do_get_preferred_height(self):
+        return 1, 1
+
+    def do_get_preferred_width_for_height(self, _height):
+        return 1, 1
+
+    def do_get_preferred_height_for_width(self, _width):
+        return 1, 1
+
+    def on_draw(self, widget, cr):
+        alloc = widget.get_allocation()
+        width = max(1, alloc.width)
+        height = max(1, alloc.height)
+        cr.set_source_rgb(0.02, 0.02, 0.02)
+        cr.rectangle(0, 0, width, height)
+        cr.fill()
+        self.cells = []
+        if not self.launchers:
+            return False
+        icon_size = max(14, min(24, int(min(width, height) / 2.4)))
+        cell_size = icon_size + 6
+        columns = max(1, width // cell_size)
+        rows = max(1, int(math.ceil(len(self.launchers) / columns)))
+        cell_width = width / columns
+        cell_height = max(1, height / rows)
+        icon_size = max(12, min(icon_size, int(min(cell_width, cell_height) - 4)))
+        for index, launcher in enumerate(self.launchers):
+            row = index // columns
+            column = index % columns
+            x = column * cell_width
+            y = row * cell_height
+            self.cells.append((launcher, x, y, cell_width, cell_height))
+            pixbuf = self.load_icon(launcher.get("icon"), icon_size)
+            if pixbuf is not None:
+                Gdk.cairo_set_source_pixbuf(cr, pixbuf, x + (cell_width - icon_size) / 2.0, y + (cell_height - icon_size) / 2.0)
+                cr.paint()
+            else:
+                label = widget.create_pango_layout((launcher.get("name") or "?")[:1])
+                label.set_font_description(Pango.FontDescription("Sans Bold 9"))
+                tw, th = label.get_pixel_size()
+                cr.set_source_rgb(0.88, 0.9, 0.92)
+                cr.move_to(x + (cell_width - tw) / 2.0, y + (cell_height - th) / 2.0)
+                PangoCairo.show_layout(cr, label)
+        return False
+
+    def load_icon(self, icon_name, size):
+        if not icon_name:
+            return None
+        key = (icon_name, int(size))
+        if key in self.icon_cache:
+            return self.icon_cache[key]
+        pixbuf = None
+        try:
+            icon_path = Path(os.path.expanduser(icon_name))
+            if icon_path.exists():
+                pixbuf = Gdk.pixbuf_new_from_file_at_scale(str(icon_path), size, size, True)
+            else:
+                theme = Gtk.IconTheme.get_default()
+                pixbuf = theme.load_icon(icon_name, size, 0)
+        except Exception:
+            pixbuf = None
+        self.icon_cache[key] = pixbuf
+        return pixbuf
+
+    def launcher_at(self, x, y):
+        for launcher, cell_x, cell_y, cell_width, cell_height in self.cells:
+            if cell_x <= x < cell_x + cell_width and cell_y <= y < cell_y + cell_height:
+                return launcher
+        return None
+
+    def on_button_press(self, _widget, event):
+        if int(event.button) != 1:
+            return False
+        launcher = self.launcher_at(event.x, event.y)
+        if launcher is None:
+            return False
+        command = launcher.get("command") or ""
+        command = command.replace("%U", "").replace("%u", "").replace("%F", "").replace("%f", "").strip()
+        if not command:
+            return True
+        try:
+            subprocess.Popen(["/bin/sh", "-lc", command], cwd=os.path.expanduser("~"), start_new_session=True)
+        except OSError:
+            return True
+        return True
+
+
 class Tint2Slot(Gtk.Box):
     def __init__(self, profile="default", take_systray=False, owner=None):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -577,13 +731,24 @@ class Tint2Slot(Gtk.Box):
         self.suspended_tint2_commands = []
         self.set_size_request(DEFAULT_TILE_WIDTH * DEFAULT_TINT2_SLOT_UNITS, DEFAULT_TILE_HEIGHT)
 
+        self.launcher_grid = LauncherGrid()
         self.label = Gtk.Label(label="tint2")
         self.label.set_xalign(0.5)
         self.label.set_yalign(0.5)
-        self.pack_start(self.label, True, True, 0)
+        self.pack_start(self.launcher_grid, True, True, 0)
+        self.pack_start(self.label, False, False, 0)
+
+    def uses_launcher_grid(self):
+        return self.owner is not None and self.owner.tint2_placement == "cell" and self.profile == "chema-compact"
+
+    def update_child_visibility(self):
+        use_grid = self.uses_launcher_grid()
+        self.launcher_grid.set_visible(use_grid)
+        self.label.set_visible(not use_grid)
 
     def set_profile(self, profile):
         self.profile = normalize_tint2_profile(profile)
+        self.update_child_visibility()
         self.restart()
 
     def set_take_systray(self, active):
@@ -621,6 +786,7 @@ class Tint2Slot(Gtk.Box):
             self.process = None
             return
         self.label.set_text("tint2")
+        self.update_child_visibility()
         self.schedule_move()
 
     def suspend_external_tint2_panels(self):
@@ -676,6 +842,8 @@ class Tint2Slot(Gtk.Box):
         with handle:
             width = self.target_rect[2] if self.target_rect else DEFAULT_TILE_WIDTH * DEFAULT_TINT2_SLOT_UNITS
             height = self.target_rect[3] if self.target_rect else DEFAULT_TILE_HEIGHT
+            if self.uses_launcher_grid():
+                height = max(18, min(height, max(18, int(round(height * 0.36)))))
             self.config_size = (width, height)
             self.config_orientation = self.orientation
             placement = self.owner.tint2_placement if self.owner is not None else DEFAULT_TINT2_PLACEMENT
@@ -735,7 +903,12 @@ class Tint2Slot(Gtk.Box):
     def set_target_rect(self, x, y, width, height):
         width = max(1, int(width))
         height = max(1, int(height))
-        self.target_rect = (int(x), int(y), width, height)
+        if self.uses_launcher_grid():
+            tint_height = max(18, min(height, max(18, int(round(height * 0.36)))))
+            self.launcher_grid.set_layout_size(width, max(1, height - tint_height))
+            self.target_rect = (int(x), int(y + height - tint_height), width, tint_height)
+        else:
+            self.target_rect = (int(x), int(y), width, height)
         if (
             self.process is not None
             and self.process.poll() is None
@@ -2192,6 +2365,7 @@ class SimpleLauncherPanel:
 
     def set_show_tint2(self, active):
         self.show_tint2 = bool(active)
+        self.tint2_slot.update_child_visibility()
         self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
         if self.show_tint2:
             self.tint2_slot.start()
@@ -2216,6 +2390,7 @@ class SimpleLauncherPanel:
 
     def set_tint2_placement(self, placement):
         self.tint2_placement = normalize_tint2_placement(placement)
+        self.tint2_slot.update_child_visibility()
         self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
         self.tint2_slot.restart()
         self.current_columns = 0

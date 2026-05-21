@@ -126,7 +126,7 @@ La opcion `Tint2` permite activar una celda de ancho configurable o una barra ad
 Perfiles disponibles:
 
 - `default`: configuracion generica con menu de aplicaciones si esta disponible, mostrar escritorio, `gmrun`, taskbar compacta y bandeja del sistema.
-- `chema-compact`: configuracion adaptada desde tu tint2 actual. En modo celda usa botones principales, tus atajos/launchers, volumen, mostrar escritorio, bandeja del sistema y bateria. Mostrar escritorio y menu inicio van en el mismo grupo de iconos que el resto de launchers; el menu inicio se ordena al extremo derecho. En modo barra adosada usa el conjunto completo de botones, ejecutores y launchers del panel original, sin reloj porque winmirror ya lo ofrece como celda propia.
+- `chema-compact`: configuracion adaptada desde tu tint2 actual. En modo celda, winmirror dibuja tus atajos/launchers como una cuadricula adaptable porque tint2 no ajusta el launcher `L` en varias filas; tint2 queda para botones principales, volumen, bandeja del sistema y bateria. Mostrar escritorio y menu inicio van en el mismo grupo de iconos que el resto de launchers; el menu inicio se ordena al extremo derecho. En modo barra adosada usa el conjunto completo de botones, ejecutores y launchers del panel original, sin reloj porque winmirror ya lo ofrece como celda propia.
 
 Tambien se puede abrir directamente desde CLI:
 
