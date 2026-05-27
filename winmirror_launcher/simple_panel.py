@@ -1845,30 +1845,22 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         height = max(1, alloc.height)
 
         is_triangle = self.triangle_orientation in {"up", "down", "left", "right"}
-        fill_triangle_voids = is_triangle and self.in_vertical_triangle_flow() and self.triangle_orientation in {"up", "down"}
-        if not is_triangle or fill_triangle_voids:
+        if not is_triangle:
             clear_background(cr)
 
-        if not fill_triangle_voids:
-            cr.set_source_rgb(0.02, 0.02, 0.02)
-            if is_triangle:
-                self.triangle_path(cr, width, height)
-            else:
-                cr.rectangle(0, 0, width, height)
-            cr.fill()
+        cr.set_source_rgb(0.02, 0.02, 0.02)
+        if is_triangle:
+            self.triangle_path(cr, width, height)
+        else:
+            cr.rectangle(0, 0, width, height)
+        cr.fill()
+
+        if is_triangle:
+            cr.save()
+            self.triangle_path(cr, width, height)
+            cr.clip()
 
         if self.current_pixbuf is None:
-            if fill_triangle_voids:
-                cr.set_source_rgba(0.02, 0.02, 0.02, 0.76)
-                cr.rectangle(0, 0, width, height)
-                cr.fill()
-                cr.set_source_rgba(0.0, 0.0, 0.0, 0.34)
-                self.triangle_path(cr, width, height)
-                cr.fill()
-            if is_triangle:
-                cr.save()
-                self.triangle_path(cr, width, height)
-                cr.clip()
             self.draw_placeholder(widget, cr, width, height)
             if is_triangle:
                 self.draw_overlays(widget, cr, width, height)
@@ -1886,25 +1878,6 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         draw_h = src_h * scale
         off_x = (width - draw_w) / 2.0
         off_y = (height - draw_h) / 2.0
-
-        if fill_triangle_voids:
-            cr.save()
-            cr.translate(off_x, off_y)
-            cr.scale(scale, scale)
-            Gdk.cairo_set_source_pixbuf(cr, self.current_pixbuf, 0, 0)
-            cr.paint_with_alpha(0.30)
-            cr.restore()
-            cr.set_source_rgba(0.0, 0.0, 0.0, 0.38)
-            cr.rectangle(0, 0, width, height)
-            cr.fill()
-            cr.set_source_rgb(0.02, 0.02, 0.02)
-            self.triangle_path(cr, width, height)
-            cr.fill()
-
-        if is_triangle:
-            cr.save()
-            self.triangle_path(cr, width, height)
-            cr.clip()
 
         cr.save()
         cr.translate(off_x, off_y)
