@@ -2566,23 +2566,63 @@ class SimpleLauncherPanel:
             rows = max(rows, end_slot // max(1, int(cell_columns)) + 1)
         return rows
 
-    def choose_vertical_triangle_braid_shape(self, width, height, entries, slot_count, min_cells, max_cells):
+    def iter_vertical_triangle_layout_positions(self, entries, cell_rows):
+        cell_rows = max(1, int(cell_rows))
+        cursor = 0
+        for widget, units in entries:
+            span_slots = self.triangle_entry_slot_units(widget, units, "vertical")
+
+            if not isinstance(widget, SimpleMirrorTile) and cursor % 2:
+                cursor += 1
+
+            row = cursor % cell_rows
+            if row + span_slots > cell_rows:
+                cursor += cell_rows - row
+                if not isinstance(widget, SimpleMirrorTile) and cursor % 2:
+                    cursor += 1
+
+            yield widget, cursor, span_slots
+            cursor += span_slots
+
+    def triangle_columns_for_vertical_entries(self, entries, cell_rows):
+        columns = 1
+        for _widget, cursor, span_slots in self.iter_vertical_triangle_layout_positions(entries, cell_rows):
+            end_slot = cursor + max(1, int(span_slots)) - 1
+            columns = max(columns, end_slot // max(1, int(cell_rows)) + 1)
+        return columns
+
+    def choose_vertical_triangle_rotated_shape(self, width, height, entries, slot_count, min_cells, max_cells):
         best = None
-        max_columns = min(max_cells, self.max_layout_columns or max_cells)
-        for cell_columns in range(min_cells, max_columns + 1):
-            rows = self.triangle_rows_for_entries(entries, cell_columns, "vertical")
-            if self.max_layout_rows is not None and rows > self.max_layout_rows:
+        max_rows = min(max_cells, self.max_layout_rows or max_cells)
+        for cell_rows in range(min_cells, max_rows + 1):
+            columns = self.triangle_columns_for_vertical_entries(entries, cell_rows)
+            if self.max_layout_columns is not None and columns > self.max_layout_columns:
                 continue
-            tile_width = width / (1.0 + max(0, cell_columns - 1) * 0.5)
-            tile_height = height / rows
+            tile_width = width / columns
+            tile_height = height / (1.0 + max(0, cell_rows - 1) * 0.5)
             visible_area = min(tile_width, MAX_TILE_WIDTH) * min(tile_height, MAX_TILE_HEIGHT)
             aspect = tile_width / max(1.0, tile_height)
-            aspect_penalty = abs(math.log(max(0.1, aspect / 0.95)))
-            empty_slots = (cell_columns * rows) - slot_count
-            lane_penalty = max(0, cell_columns - 2) * 12
-            score = visible_area - (visible_area * aspect_penalty * 0.14) - (empty_slots * 16) - lane_penalty
+            aspect_penalty = abs(math.log(max(0.1, aspect / 0.87)))
+            empty_slots = (columns * cell_rows) - slot_count
+            score = visible_area - (visible_area * aspect_penalty * 0.14) - (empty_slots * 16)
             if best is None or score > best[0]:
-                best = (score, cell_columns, rows, tile_width, tile_height)
+                best = (score, columns, cell_rows, tile_width, tile_height)
+
+        if best is not None:
+            return best
+
+        max_columns = min(max_cells, self.max_layout_columns or max_cells)
+        for columns in range(1, max_columns + 1):
+            cell_rows = int(math.ceil(float(slot_count) / columns))
+            if self.max_layout_rows is not None and cell_rows > self.max_layout_rows:
+                continue
+            tile_width = width / columns
+            tile_height = height / (1.0 + max(0, cell_rows - 1) * 0.5)
+            visible_area = min(tile_width, MAX_TILE_WIDTH) * min(tile_height, MAX_TILE_HEIGHT)
+            empty_slots = (columns * cell_rows) - slot_count
+            score = visible_area - (empty_slots * 16)
+            if best is None or score > best[0]:
+                best = (score, columns, cell_rows, tile_width, tile_height)
         return best
 
     def choose_triangle_flow_shape(self, width, height, entries):
@@ -2616,7 +2656,7 @@ class SimpleLauncherPanel:
             if best is None or score > best[0]:
                 best = (score, "horizontal", cell_columns, rows, tile_width, tile_height)
 
-        vertical_best = self.choose_vertical_triangle_braid_shape(
+        vertical_best = self.choose_vertical_triangle_rotated_shape(
             width,
             height,
             entries,
@@ -2625,11 +2665,11 @@ class SimpleLauncherPanel:
             vertical_max_cells,
         )
         if vertical_best is not None:
-            score, cell_columns, rows, tile_width, tile_height = vertical_best
+            score, columns, cell_rows, tile_width, tile_height = vertical_best
             if prefer_vertical:
-                score *= 1.18
+                return "vertical", columns, cell_rows, max(1, int(tile_width)), max(1, int(tile_height))
             if best is None or score > best[0]:
-                best = (score, "vertical", cell_columns, rows, tile_width, tile_height)
+                best = (score, "vertical", columns, cell_rows, tile_width, tile_height)
 
         if best is None:
             columns = min(self.max_layout_columns or slot_count, slot_count)
@@ -2652,16 +2692,16 @@ class SimpleLauncherPanel:
         self.tile_height = clamp(tile_height, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, self.tile_height)
 
         iterator = (
-            self.iter_triangle_layout_positions(entries, columns, "vertical")
+            self.iter_vertical_triangle_layout_positions(entries, rows)
             if flow == "vertical"
             else self.iter_triangle_layout_positions(entries, columns)
         )
         for widget, cursor, span_slots in iterator:
             if flow == "vertical":
-                row = cursor // columns
-                column = cursor % columns
-                x = int(round(column * self.tile_width * 0.5))
-                y = int(round(row * self.tile_height))
+                row = cursor % rows
+                column = cursor // rows
+                x = int(round(column * self.tile_width))
+                y = int(round(row * self.tile_height * 0.5))
             else:
                 row = cursor // columns
                 column = cursor % columns
@@ -2669,7 +2709,7 @@ class SimpleLauncherPanel:
                 y = int(round(row * self.tile_height))
             if isinstance(widget, SimpleMirrorTile):
                 if flow == "vertical":
-                    widget.set_triangle_orientation("down" if (row + column) % 2 == 0 else "up")
+                    widget.set_triangle_orientation("right" if cursor % 2 == 0 else "left")
                 else:
                     widget.set_triangle_orientation("down" if cursor % 2 == 0 else "up")
                 widget.set_layout_size(self.tile_width, self.tile_height)
@@ -2677,8 +2717,8 @@ class SimpleLauncherPanel:
                 widget.show()
                 continue
 
-            width_px = self.tile_width * max(1.0, span_slots * 0.5)
-            height_px = self.tile_height
+            width_px = self.tile_width if flow == "vertical" else self.tile_width * max(1.0, span_slots * 0.5)
+            height_px = self.tile_height * max(1.0, span_slots * 0.5) if flow == "vertical" else self.tile_height
             widget.set_size_request(max(1, int(width_px)), max(1, int(height_px)))
             if isinstance(widget, LauncherGrid):
                 widget.set_layout_size(width_px, height_px)
