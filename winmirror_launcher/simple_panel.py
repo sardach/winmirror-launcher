@@ -1567,8 +1567,8 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         return (0.0, 0.0, 0.0, 0.62), (0.95, 0.95, 0.95)
 
     def title_band_rect(self, width, height, text_height):
-        if self.in_vertical_triangle_flow() and self.triangle_orientation in {"left", "right"}:
-            band_width = int(max(42, min(width - 8, width * 0.68)))
+        if self.in_vertical_triangle_flow():
+            band_width = int(max(42, min(width - 8, width * 0.76)))
             band_height = int(max(text_height + 6, min(26, height * 0.42)))
             return (
                 max(4, int((width - band_width) / 2)),
@@ -1608,7 +1608,7 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         if self.label_mode == "icon":
             self.draw_app_icon_overlay(cr, width, height)
             return
-        vertical_flow = self.in_vertical_triangle_flow() and self.triangle_orientation in {"left", "right"}
+        vertical_flow = self.in_vertical_triangle_flow()
         title = self.display_name()[:26 if vertical_flow else 42]
         font_size = 7 if vertical_flow else (7 if width < 96 else 8)
         layout = widget.create_pango_layout(title)
@@ -2666,63 +2666,23 @@ class SimpleLauncherPanel:
             rows = max(rows, end_slot // max(1, int(cell_columns)) + 1)
         return rows
 
-    def iter_vertical_triangle_layout_positions(self, entries, cell_rows):
-        cell_rows = max(1, int(cell_rows))
-        cursor = 0
-        for widget, units in entries:
-            span_slots = self.triangle_entry_slot_units(widget, units, "vertical")
-
-            if not isinstance(widget, SimpleMirrorTile) and cursor % 2:
-                cursor += 1
-
-            row = cursor % cell_rows
-            if row + span_slots > cell_rows:
-                cursor += cell_rows - row
-                if not isinstance(widget, SimpleMirrorTile) and cursor % 2:
-                    cursor += 1
-
-            yield widget, cursor, span_slots
-            cursor += span_slots
-
-    def triangle_columns_for_vertical_entries(self, entries, cell_rows):
-        columns = 1
-        for _widget, cursor, span_slots in self.iter_vertical_triangle_layout_positions(entries, cell_rows):
-            end_slot = cursor + max(1, int(span_slots)) - 1
-            columns = max(columns, end_slot // max(1, int(cell_rows)) + 1)
-        return columns
-
-    def choose_vertical_triangle_rotated_shape(self, width, height, entries, slot_count, min_cells, max_cells):
+    def choose_vertical_triangle_upright_shape(self, width, height, entries, slot_count, min_cells, max_cells):
         best = None
-        max_rows = min(max_cells, self.max_layout_rows or max_cells)
-        for cell_rows in range(min_cells, max_rows + 1):
-            columns = self.triangle_columns_for_vertical_entries(entries, cell_rows)
-            if self.max_layout_columns is not None and columns > self.max_layout_columns:
+        max_columns = min(max_cells, self.max_layout_columns or max_cells)
+        for cell_columns in range(min_cells, max_columns + 1):
+            rows = self.triangle_rows_for_entries(entries, cell_columns, "vertical")
+            if self.max_layout_rows is not None and rows > self.max_layout_rows:
                 continue
-            tile_width = width / columns
-            tile_height = height / (1.0 + max(0, cell_rows - 1) * 0.5)
+            tile_width = width / (1.0 + max(0, cell_columns - 1) * 0.5)
+            tile_height = height / rows
             visible_area = min(tile_width, MAX_TILE_WIDTH) * min(tile_height, MAX_TILE_HEIGHT)
             aspect = tile_width / max(1.0, tile_height)
-            aspect_penalty = abs(math.log(max(0.1, aspect / 0.87)))
-            empty_slots = (columns * cell_rows) - slot_count
-            score = visible_area - (visible_area * aspect_penalty * 0.14) - (empty_slots * 16)
+            aspect_penalty = abs(math.log(max(0.1, aspect / 1.05)))
+            empty_slots = (cell_columns * rows) - slot_count
+            column_penalty = max(0, cell_columns - 2) * 24
+            score = visible_area - (visible_area * aspect_penalty * 0.12) - (empty_slots * 14) - column_penalty
             if best is None or score > best[0]:
-                best = (score, columns, cell_rows, tile_width, tile_height)
-
-        if best is not None:
-            return best
-
-        max_columns = min(max_cells, self.max_layout_columns or max_cells)
-        for columns in range(1, max_columns + 1):
-            cell_rows = int(math.ceil(float(slot_count) / columns))
-            if self.max_layout_rows is not None and cell_rows > self.max_layout_rows:
-                continue
-            tile_width = width / columns
-            tile_height = height / (1.0 + max(0, cell_rows - 1) * 0.5)
-            visible_area = min(tile_width, MAX_TILE_WIDTH) * min(tile_height, MAX_TILE_HEIGHT)
-            empty_slots = (columns * cell_rows) - slot_count
-            score = visible_area - (empty_slots * 16)
-            if best is None or score > best[0]:
-                best = (score, columns, cell_rows, tile_width, tile_height)
+                best = (score, cell_columns, rows, tile_width, tile_height)
         return best
 
     def choose_triangle_flow_shape(self, width, height, entries):
@@ -2756,7 +2716,7 @@ class SimpleLauncherPanel:
             if best is None or score > best[0]:
                 best = (score, "horizontal", cell_columns, rows, tile_width, tile_height)
 
-        vertical_best = self.choose_vertical_triangle_rotated_shape(
+        vertical_best = self.choose_vertical_triangle_upright_shape(
             width,
             height,
             entries,
@@ -2779,12 +2739,10 @@ class SimpleLauncherPanel:
 
     def should_fill_vertical_triangle_edge(self, orientation, row, column, rows, columns, column_first_row, column_last_row):
         if columns <= 1:
-            return row <= column_first_row or row >= column_last_row
-        if row <= column_first_row or row >= column_last_row:
+            return False
+        if row <= column_first_row and orientation == "up":
             return True
-        if column == 0 and orientation == "left":
-            return True
-        if column >= columns - 1 and orientation == "right":
+        if row >= column_last_row and orientation == "down":
             return True
         return False
 
@@ -2803,7 +2761,7 @@ class SimpleLauncherPanel:
         self.tile_height = clamp(tile_height, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, self.tile_height)
 
         placements = list(
-            self.iter_vertical_triangle_layout_positions(entries, rows)
+            self.iter_triangle_layout_positions(entries, columns, "vertical")
             if flow == "vertical"
             else self.iter_triangle_layout_positions(entries, columns)
         )
@@ -2812,17 +2770,17 @@ class SimpleLauncherPanel:
             for widget, cursor, _span_slots in placements:
                 if not isinstance(widget, SimpleMirrorTile):
                     continue
-                row = cursor % rows
-                column = cursor // rows
+                row = cursor // columns
+                column = cursor % columns
                 first_row, last_row = vertical_column_edges.get(column, (row, row))
                 vertical_column_edges[column] = (min(first_row, row), max(last_row, row))
 
         for widget, cursor, span_slots in placements:
             if flow == "vertical":
-                row = cursor % rows
-                column = cursor // rows
-                x = int(round(column * self.tile_width))
-                y = int(round(row * self.tile_height * 0.5))
+                row = cursor // columns
+                column = cursor % columns
+                x = int(round(column * self.tile_width * 0.5))
+                y = int(round(row * self.tile_height))
             else:
                 row = cursor // columns
                 column = cursor % columns
@@ -2830,7 +2788,7 @@ class SimpleLauncherPanel:
                 y = int(round(row * self.tile_height))
             if isinstance(widget, SimpleMirrorTile):
                 if flow == "vertical":
-                    orientation = "right" if cursor % 2 == 0 else "left"
+                    orientation = "down" if cursor % 2 == 0 else "up"
                     column_first_row, column_last_row = vertical_column_edges.get(column, (row, row))
                     if self.should_fill_vertical_triangle_edge(
                         orientation,
@@ -2852,8 +2810,8 @@ class SimpleLauncherPanel:
                 widget.show()
                 continue
 
-            width_px = self.tile_width if flow == "vertical" else self.tile_width * max(1.0, span_slots * 0.5)
-            height_px = self.tile_height * max(1.0, span_slots * 0.5) if flow == "vertical" else self.tile_height
+            width_px = self.tile_width * max(1.0, span_slots * 0.5)
+            height_px = self.tile_height
             widget.set_size_request(max(1, int(width_px)), max(1, int(height_px)))
             if isinstance(widget, LauncherGrid):
                 widget.set_layout_size(width_px, height_px)
