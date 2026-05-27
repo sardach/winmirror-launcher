@@ -2777,6 +2777,17 @@ class SimpleLauncherPanel:
             return "horizontal", columns, rows, max(1, int(width / (1.0 + max(0, columns - 1) * 0.5))), max(1, int(height / max(1, rows)))
         return best[1], best[2], best[3], max(1, int(best[4])), max(1, int(best[5]))
 
+    def should_fill_vertical_triangle_edge(self, orientation, row, column, rows, columns, column_first_row, column_last_row):
+        if columns <= 1:
+            return row <= column_first_row or row >= column_last_row
+        if row <= column_first_row or row >= column_last_row:
+            return True
+        if column == 0 and orientation == "left":
+            return True
+        if column >= columns - 1 and orientation == "right":
+            return True
+        return False
+
     def fit_triangular_layout(self, width, height):
         visible_tiles = self.visible_tiles()
         for tile in self.tiles:
@@ -2791,12 +2802,22 @@ class SimpleLauncherPanel:
         self.tile_width = clamp(tile_width, MIN_TILE_WIDTH, MAX_TILE_WIDTH, self.tile_width)
         self.tile_height = clamp(tile_height, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, self.tile_height)
 
-        iterator = (
+        placements = list(
             self.iter_vertical_triangle_layout_positions(entries, rows)
             if flow == "vertical"
             else self.iter_triangle_layout_positions(entries, columns)
         )
-        for widget, cursor, span_slots in iterator:
+        vertical_column_edges = {}
+        if flow == "vertical":
+            for widget, cursor, _span_slots in placements:
+                if not isinstance(widget, SimpleMirrorTile):
+                    continue
+                row = cursor % rows
+                column = cursor // rows
+                first_row, last_row = vertical_column_edges.get(column, (row, row))
+                vertical_column_edges[column] = (min(first_row, row), max(last_row, row))
+
+        for widget, cursor, span_slots in placements:
             if flow == "vertical":
                 row = cursor % rows
                 column = cursor // rows
@@ -2809,12 +2830,23 @@ class SimpleLauncherPanel:
                 y = int(round(row * self.tile_height))
             if isinstance(widget, SimpleMirrorTile):
                 if flow == "vertical":
-                    if row == 0 and columns > 1:
+                    orientation = "right" if cursor % 2 == 0 else "left"
+                    column_first_row, column_last_row = vertical_column_edges.get(column, (row, row))
+                    if self.should_fill_vertical_triangle_edge(
+                        orientation,
+                        row,
+                        column,
+                        rows,
+                        columns,
+                        column_first_row,
+                        column_last_row,
+                    ):
                         widget.set_triangle_orientation(None)
                     else:
-                        widget.set_triangle_orientation("right" if cursor % 2 == 0 else "left")
+                        widget.set_triangle_orientation(orientation)
                 else:
-                    widget.set_triangle_orientation("down" if cursor % 2 == 0 else "up")
+                    orientation = "down" if cursor % 2 == 0 else "up"
+                    widget.set_triangle_orientation(orientation)
                 widget.set_layout_size(self.tile_width, self.tile_height)
                 self.grid.move(widget, x, y)
                 widget.show()
