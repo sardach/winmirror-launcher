@@ -1530,6 +1530,55 @@ class SimpleMirrorTile(Gtk.DrawingArea):
             and self.panel.triangle_flow == "vertical"
         )
 
+    def title_band_rect(self, width, height, text_height):
+        if self.in_vertical_triangle_flow() and self.triangle_orientation in {"left", "right"}:
+            band_width = int(max(18, min(28, width * 0.28)))
+            if self.triangle_orientation == "right":
+                return (0, 0, band_width, height)
+            return (max(0, width - band_width), 0, band_width, height)
+        if self.triangle_orientation in {"down", "right"}:
+            return (0, 0, width, text_height + 5)
+        return (0, max(0, height - text_height - 5), width, text_height + 5)
+
+    def draw_title_overlay(self, widget, cr, width, height):
+        vertical_flow = self.in_vertical_triangle_flow() and self.triangle_orientation in {"left", "right"}
+        title = self.display_name()[:36 if vertical_flow else 42]
+        font_size = 8 if vertical_flow else (7 if width < 96 else 8)
+        layout = widget.create_pango_layout(title)
+        layout.set_font_description(Pango.FontDescription(f"Sans {font_size}"))
+        layout.set_ellipsize(Pango.EllipsizeMode.END)
+        layout.set_alignment(Pango.Alignment.CENTER)
+
+        if vertical_flow:
+            band_x, band_y, band_w, band_h = self.title_band_rect(width, height, font_size + 5)
+            layout.set_width(max(1, band_h - 10) * Pango.SCALE)
+            tw, th = layout.get_pixel_size()
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.72)
+            cr.rectangle(band_x, band_y, band_w, band_h)
+            cr.fill()
+            cr.save()
+            if self.triangle_orientation == "right":
+                cr.translate(band_x + max(1, (band_w - th) / 2.0), band_y + band_h - max(5, (band_h - tw) / 2.0))
+                cr.rotate(-math.pi / 2.0)
+            else:
+                cr.translate(band_x + band_w - max(1, (band_w - th) / 2.0), band_y + max(5, (band_h - tw) / 2.0))
+                cr.rotate(math.pi / 2.0)
+            cr.set_source_rgb(0.94, 0.94, 0.94)
+            PangoCairo.show_layout(cr, layout)
+            cr.restore()
+            return
+
+        layout.set_width(max(1, width - 8) * Pango.SCALE)
+        _tw, th = layout.get_pixel_size()
+        band_x, band_y, band_w, band_h = self.title_band_rect(width, height, th)
+        text_y = band_y + 2 if band_y == 0 else max(1, band_y + 2)
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.68)
+        cr.rectangle(band_x, band_y, band_w, band_h)
+        cr.fill()
+        cr.set_source_rgb(0.92, 0.92, 0.92)
+        cr.move_to(4, text_y)
+        PangoCairo.show_layout(cr, layout)
+
     def release_layout_size(self):
         self.layout_width = SHRINK_TILE_WIDTH
         self.layout_height = SHRINK_TILE_HEIGHT
@@ -1799,33 +1848,7 @@ class SimpleMirrorTile(Gtk.DrawingArea):
             PangoCairo.show_layout(cr, layout)
 
         if self.show_title:
-            vertical_flow = self.in_vertical_triangle_flow()
-            title = self.display_name()[:28 if vertical_flow else 42]
-            layout = widget.create_pango_layout(title)
-            title_font_size = 7 if vertical_flow or width < 96 else 8
-            layout.set_font_description(Pango.FontDescription(f"Sans {title_font_size}"))
-            layout.set_ellipsize(Pango.EllipsizeMode.END)
-            layout.set_alignment(Pango.Alignment.CENTER)
-            layout.set_width(max(1, width - 8) * Pango.SCALE)
-            _tw, th = layout.get_pixel_size()
-            cr.set_source_rgba(0.0, 0.0, 0.0, 0.68)
-            if self.triangle_orientation == "down":
-                title_y = 0
-                text_y = 2
-            elif self.triangle_orientation == "up":
-                title_y = max(0, height - th - 5)
-                text_y = max(1, height - th - 3)
-            elif self.triangle_orientation == "left":
-                title_y = max(0, height - th - 5)
-                text_y = max(1, height - th - 3)
-            else:
-                title_y = 0
-                text_y = 2
-            cr.rectangle(0, title_y, width, th + 5)
-            cr.fill()
-            cr.set_source_rgb(0.92, 0.92, 0.92)
-            cr.move_to(4, text_y)
-            PangoCairo.show_layout(cr, layout)
+            self.draw_title_overlay(widget, cr, width, height)
 
         if self.panel is not None and self.panel.order_edit_mode:
             self.draw_order_controls(widget, cr, width, height)
