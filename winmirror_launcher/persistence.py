@@ -27,6 +27,8 @@ DEFAULT_STATE = {
         "tile_height": 72,
         "fps": 1.0,
         "mirror_layout_mode": "grid",
+        "max_layout_columns": None,
+        "max_layout_rows": None,
         "window_decorated": False,
         "show_title": False,
         "show_close": False,

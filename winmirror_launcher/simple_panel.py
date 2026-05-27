@@ -65,6 +65,7 @@ DEFAULT_CLOCK_FONT_COLOR = "#e6ebf0"
 DEFAULT_BACKGROUND_COLOR = "#000000"
 DEFAULT_BACKGROUND_ALPHA = 0.0
 WEATHER_REFRESH_SECONDS = 900
+MAX_LAYOUT_LIMIT = 64
 
 
 def clamp(value, lower, upper, fallback):
@@ -88,6 +89,18 @@ def clamp_float(value, lower, upper, fallback):
     except (TypeError, ValueError):
         return fallback
     return max(lower, min(upper, value))
+
+
+def normalize_layout_limit(value):
+    if value in (None, "", 0, "0"):
+        return None
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return max(1, min(MAX_LAYOUT_LIMIT, value))
 
 
 def normalize_hex_color(value, fallback):
@@ -1456,7 +1469,7 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         self.set_size_request(self.layout_width, self.layout_height)
 
     def set_triangle_orientation(self, orientation):
-        orientation = orientation if orientation in {"up", "down"} else None
+        orientation = orientation if orientation in {"up", "down", "left", "right"} else None
         if self.triangle_orientation == orientation:
             return
         self.triangle_orientation = orientation
@@ -1467,6 +1480,14 @@ class SimpleMirrorTile(Gtk.DrawingArea):
             cr.move_to(0, 0)
             cr.line_to(width, 0)
             cr.line_to(width / 2.0, height)
+        elif self.triangle_orientation == "left":
+            cr.move_to(width, 0)
+            cr.line_to(width, height)
+            cr.line_to(0, height / 2.0)
+        elif self.triangle_orientation == "right":
+            cr.move_to(0, 0)
+            cr.line_to(width, height / 2.0)
+            cr.line_to(0, height)
         else:
             cr.move_to(width / 2.0, 0)
             cr.line_to(width, height)
@@ -1474,7 +1495,7 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         cr.close_path()
 
     def point_in_triangle(self, x, y, width, height):
-        if self.triangle_orientation not in {"up", "down"}:
+        if self.triangle_orientation not in {"up", "down", "left", "right"}:
             return True
         width = max(1.0, float(width))
         height = max(1.0, float(height))
@@ -1482,9 +1503,13 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         y = float(y)
         if not (0 <= x <= width and 0 <= y <= height):
             return False
-        half_span = (y / height) * (width / 2.0) if self.triangle_orientation == "up" else ((height - y) / height) * (width / 2.0)
-        center = width / 2.0
-        return center - half_span <= x <= center + half_span
+        if self.triangle_orientation in {"up", "down"}:
+            half_span = (y / height) * (width / 2.0) if self.triangle_orientation == "up" else ((height - y) / height) * (width / 2.0)
+            center = width / 2.0
+            return center - half_span <= x <= center + half_span
+        half_span = (x / width) * (height / 2.0) if self.triangle_orientation == "right" else ((width - x) / width) * (height / 2.0)
+        center = height / 2.0
+        return center - half_span <= y <= center + half_span
 
     def close_icon_rect(self, width, height):
         size = 18
@@ -1492,6 +1517,10 @@ class SimpleMirrorTile(Gtk.DrawingArea):
             return (max(0, (width - size) / 2.0), 0, size, size)
         if self.triangle_orientation == "down":
             return (max(0, (width - size) / 2.0), max(0, height - size), size, size)
+        if self.triangle_orientation == "left":
+            return (0, max(0, (height - size) / 2.0), size, size)
+        if self.triangle_orientation == "right":
+            return (max(0, width - size), max(0, (height - size) / 2.0), size, size)
         return (max(0, width - size), 0, size, size)
 
     def release_layout_size(self):
@@ -1654,10 +1683,10 @@ class SimpleMirrorTile(Gtk.DrawingArea):
                 return True
         if event.y >= height - control_size:
             if event.x <= control_size:
-                self.panel.move_tile(self, -self.panel.current_columns)
+                self.panel.move_tile(self, -self.panel.layout_vertical_delta())
                 return True
             if event.x >= width - control_size:
-                self.panel.move_tile(self, self.panel.current_columns)
+                self.panel.move_tile(self, self.panel.layout_vertical_delta())
                 return True
         return False
 
@@ -1682,7 +1711,7 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         width = max(1, alloc.width)
         height = max(1, alloc.height)
 
-        is_triangle = self.triangle_orientation in {"up", "down"}
+        is_triangle = self.triangle_orientation in {"up", "down", "left", "right"}
         if not is_triangle:
             clear_background(cr)
 
@@ -1740,7 +1769,7 @@ class SimpleMirrorTile(Gtk.DrawingArea):
     def draw_border(self, cr, width, height):
         cr.set_source_rgb(0.18, 0.18, 0.18)
         cr.set_line_width(1.0)
-        if self.triangle_orientation in {"up", "down"}:
+        if self.triangle_orientation in {"up", "down", "left", "right"}:
             self.triangle_path(cr, width, height)
         else:
             cr.rectangle(0.5, 0.5, max(0, width - 1), max(0, height - 1))
@@ -1858,6 +1887,8 @@ class SimpleLauncherPanel:
         hover_mode=None,
         hover_scale=None,
         mirror_layout_mode="grid",
+        max_layout_columns=None,
+        max_layout_rows=None,
         show_borders=False,
         order_mode="last-used",
         label_mode="title",
@@ -1904,6 +1935,8 @@ class SimpleLauncherPanel:
         self.hover_expand = self.hover_mode != "off"
         self.hover_scale = normalize_hover_scale(hover_scale, self.hover_mode, hover_expand)
         self.mirror_layout_mode = normalize_mirror_layout_mode(mirror_layout_mode)
+        self.max_layout_columns = normalize_layout_limit(max_layout_columns)
+        self.max_layout_rows = normalize_layout_limit(max_layout_rows)
         self.show_borders = bool(show_borders)
         self.label_mode = normalize_label_mode(label_mode)
         self.sticky_workspaces = bool(sticky_workspaces)
@@ -1933,6 +1966,7 @@ class SimpleLauncherPanel:
         self.hidden_poll_source_id = None
         self.current_columns = 0
         self.current_rows = 0
+        self.triangle_flow = "horizontal"
         self.order_edit_mode = False
         self.order_mode = normalize_order_mode(order_mode)
         self.mru_window_ids = []
@@ -2078,6 +2112,8 @@ class SimpleLauncherPanel:
                 "tile_height": self.tile_height,
                 "fps": self.fps,
                 "mirror_layout_mode": self.mirror_layout_mode,
+                "max_layout_columns": self.max_layout_columns,
+                "max_layout_rows": self.max_layout_rows,
                 "window_decorated": self.window_decorated,
                 "show_title": self.show_title,
                 "show_close": self.show_close,
@@ -2434,8 +2470,11 @@ class SimpleLauncherPanel:
         width = max(1, int(width))
         height = max(1, int(height))
         best = None
-        for columns in range(1, count + 1):
+        max_columns = min(count, self.max_layout_columns or count)
+        for columns in range(1, max_columns + 1):
             rows = int(math.ceil(float(count) / columns))
+            if self.max_layout_rows is not None and rows > self.max_layout_rows:
+                continue
             tile_width = max(1, width // columns)
             tile_height = max(1, height // rows)
             visible_area = min(tile_width, MAX_TILE_WIDTH) * min(tile_height, MAX_TILE_HEIGHT)
@@ -2445,6 +2484,9 @@ class SimpleLauncherPanel:
             score = visible_area - (visible_area * aspect_penalty * 0.18) - (empty_slots * 40)
             if best is None or score > best[0]:
                 best = (score, columns, rows)
+        if best is None:
+            columns = min(max_columns, max(1, count))
+            return columns, int(math.ceil(float(count) / columns))
         return best[1], best[2]
 
     def choose_triangle_shape(self, width, height, count):
@@ -2453,8 +2495,11 @@ class SimpleLauncherPanel:
         best = None
         width = max(1, int(width))
         height = max(1, int(height))
-        for columns in range(1, count + 1):
+        max_columns = min(count, self.max_layout_columns or count)
+        for columns in range(1, max_columns + 1):
             rows = int(math.ceil(float(count) / columns))
+            if self.max_layout_rows is not None and rows > self.max_layout_rows:
+                continue
             tile_width = width / (1.0 + max(0, columns - 1) * 0.5)
             tile_height = height / rows
             area = tile_width * tile_height * 0.5
@@ -2464,6 +2509,10 @@ class SimpleLauncherPanel:
             score = area - (area * aspect_penalty * 0.22) - (empty * 30)
             if best is None or score > best[0]:
                 best = (score, columns, rows, tile_width, tile_height)
+        if best is None:
+            columns = min(max_columns, max(1, count))
+            rows = int(math.ceil(float(count) / columns))
+            return columns, rows, max(1, int(width / (1.0 + max(0, columns - 1) * 0.5))), max(1, int(height / rows))
         return best[1], best[2], max(1, int(best[3])), max(1, int(best[4]))
 
     def triangle_entry_slot_units(self, widget, units):
@@ -2489,6 +2538,24 @@ class SimpleLauncherPanel:
             yield widget, cursor, span_slots
             cursor += span_slots
 
+    def iter_vertical_triangle_layout_positions(self, entries, cell_rows):
+        cell_rows = max(1, int(cell_rows))
+        cursor = 0
+        for widget, units in entries:
+            span_slots = self.triangle_entry_slot_units(widget, units)
+
+            if not isinstance(widget, SimpleMirrorTile) and cursor % 2:
+                cursor += 1
+
+            row = cursor % cell_rows
+            if row + span_slots > cell_rows:
+                cursor += cell_rows - row
+                if not isinstance(widget, SimpleMirrorTile) and cursor % 2:
+                    cursor += 1
+
+            yield widget, cursor, span_slots
+            cursor += span_slots
+
     def triangle_rows_for_entries(self, entries, cell_columns):
         rows = 1
         for _widget, cursor, span_slots in self.iter_triangle_layout_positions(entries, cell_columns):
@@ -2496,17 +2563,29 @@ class SimpleLauncherPanel:
             rows = max(rows, end_slot // max(1, int(cell_columns)) + 1)
         return rows
 
+    def triangle_columns_for_vertical_entries(self, entries, cell_rows):
+        columns = 1
+        for _widget, cursor, span_slots in self.iter_vertical_triangle_layout_positions(entries, cell_rows):
+            end_slot = cursor + max(1, int(span_slots)) - 1
+            columns = max(columns, end_slot // max(1, int(cell_rows)) + 1)
+        return columns
+
     def choose_triangle_flow_shape(self, width, height, entries):
         if not entries:
-            return 1, 1, max(1, int(width)), max(1, int(height))
+            return "horizontal", 1, 1, max(1, int(width)), max(1, int(height))
         width = max(1, int(width))
         height = max(1, int(height))
         slot_count = sum(self.triangle_entry_slot_units(widget, units) for widget, units in entries)
         max_cells = max(1, slot_count)
         min_cells = max(1, max(self.triangle_entry_slot_units(widget, units) for widget, units in entries))
         best = None
+        prefer_vertical = height > width
         for cell_columns in range(min_cells, max_cells + 1):
+            if self.max_layout_columns is not None and cell_columns > self.max_layout_columns:
+                continue
             rows = self.triangle_rows_for_entries(entries, cell_columns)
+            if self.max_layout_rows is not None and rows > self.max_layout_rows:
+                continue
             tile_width = width / (1.0 + max(0, cell_columns - 1) * 0.5)
             tile_height = height / rows
             visible_area = min(tile_width, MAX_TILE_WIDTH) * min(tile_height, MAX_TILE_HEIGHT)
@@ -2514,9 +2593,34 @@ class SimpleLauncherPanel:
             aspect_penalty = abs(math.log(max(0.1, aspect / 1.15)))
             empty_slots = (cell_columns * rows) - slot_count
             score = visible_area - (visible_area * aspect_penalty * 0.18) - (empty_slots * 20)
+            if not prefer_vertical:
+                score *= 1.08
             if best is None or score > best[0]:
-                best = (score, cell_columns, rows, tile_width, tile_height)
-        return best[1], best[2], max(1, int(best[3])), max(1, int(best[4]))
+                best = (score, "horizontal", cell_columns, rows, tile_width, tile_height)
+
+        for cell_rows in range(min_cells, max_cells + 1):
+            if self.max_layout_rows is not None and cell_rows > self.max_layout_rows:
+                continue
+            columns = self.triangle_columns_for_vertical_entries(entries, cell_rows)
+            if self.max_layout_columns is not None and columns > self.max_layout_columns:
+                continue
+            tile_width = width / columns
+            tile_height = height / (1.0 + max(0, cell_rows - 1) * 0.5)
+            visible_area = min(tile_width, MAX_TILE_WIDTH) * min(tile_height, MAX_TILE_HEIGHT)
+            aspect = tile_width / max(1.0, tile_height)
+            aspect_penalty = abs(math.log(max(0.1, aspect / 0.87)))
+            empty_slots = (columns * cell_rows) - slot_count
+            score = visible_area - (visible_area * aspect_penalty * 0.18) - (empty_slots * 20)
+            if prefer_vertical:
+                score *= 1.08
+            if best is None or score > best[0]:
+                best = (score, "vertical", columns, cell_rows, tile_width, tile_height)
+
+        if best is None:
+            columns = min(self.max_layout_columns or slot_count, slot_count)
+            rows = int(math.ceil(float(slot_count) / max(1, columns)))
+            return "horizontal", columns, rows, max(1, int(width / (1.0 + max(0, columns - 1) * 0.5))), max(1, int(height / max(1, rows)))
+        return best[1], best[2], best[3], max(1, int(best[4])), max(1, int(best[5]))
 
     def fit_triangular_layout(self, width, height):
         visible_tiles = self.visible_tiles()
@@ -2525,31 +2629,47 @@ class SimpleLauncherPanel:
             tile.set_triangle_orientation(None)
         entries = self.layout_entries()
 
-        columns, rows, tile_width, tile_height = self.choose_triangle_flow_shape(width, height, entries)
+        flow, columns, rows, tile_width, tile_height = self.choose_triangle_flow_shape(width, height, entries)
+        self.triangle_flow = flow
         self.current_columns = columns
         self.current_rows = rows
         self.tile_width = clamp(tile_width, MIN_TILE_WIDTH, MAX_TILE_WIDTH, self.tile_width)
         self.tile_height = clamp(tile_height, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, self.tile_height)
 
-        for widget, cursor, span_slots in self.iter_triangle_layout_positions(entries, columns):
-            row = cursor // columns
-            column = cursor % columns
-            x = int(round(column * self.tile_width * 0.5))
-            y = int(round(row * self.tile_height))
+        iterator = (
+            self.iter_vertical_triangle_layout_positions(entries, rows)
+            if flow == "vertical"
+            else self.iter_triangle_layout_positions(entries, columns)
+        )
+        for widget, cursor, span_slots in iterator:
+            if flow == "vertical":
+                row = cursor % rows
+                column = cursor // rows
+                x = int(round(column * self.tile_width))
+                y = int(round(row * self.tile_height * 0.5))
+            else:
+                row = cursor // columns
+                column = cursor % columns
+                x = int(round(column * self.tile_width * 0.5))
+                y = int(round(row * self.tile_height))
             if isinstance(widget, SimpleMirrorTile):
-                widget.set_triangle_orientation("down" if cursor % 2 == 0 else "up")
+                if flow == "vertical":
+                    widget.set_triangle_orientation("right" if cursor % 2 == 0 else "left")
+                else:
+                    widget.set_triangle_orientation("down" if cursor % 2 == 0 else "up")
                 widget.set_layout_size(self.tile_width, self.tile_height)
                 self.grid.move(widget, x, y)
                 widget.show()
                 continue
 
-            width_px = self.tile_width * max(1.0, span_slots * 0.5)
-            widget.set_size_request(max(1, int(width_px)), max(1, int(self.tile_height)))
+            width_px = self.tile_width if flow == "vertical" else self.tile_width * max(1.0, span_slots * 0.5)
+            height_px = self.tile_height * max(1.0, span_slots * 0.5) if flow == "vertical" else self.tile_height
+            widget.set_size_request(max(1, int(width_px)), max(1, int(height_px)))
             if isinstance(widget, LauncherGrid):
-                widget.set_layout_size(width_px, self.tile_height)
+                widget.set_layout_size(width_px, height_px)
             self.grid.move(widget, x, y)
             if widget is self.tint2_slot:
-                self.update_tint2_target_rect(x, y, width_px, self.tile_height)
+                self.update_tint2_target_rect(x, y, width_px, height_px)
         self.clock_slot.set_visible(self.show_clock)
         self.launcher_grid.set_visible(self.show_launchers)
         self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
@@ -2618,6 +2738,11 @@ class SimpleLauncherPanel:
             return
         self.hovered_tile = next_tile
         self.apply_tile_size_requests()
+
+    def layout_vertical_delta(self):
+        if self.mirror_layout_mode == "triangles" and self.triangle_flow == "vertical":
+            return max(1, self.current_rows)
+        return max(1, self.current_columns)
 
     def on_panel_enter(self, *_args):
         self.note_pointer_inside(True)
@@ -2967,6 +3092,18 @@ class SimpleLauncherPanel:
             item.set_active(self.mirror_layout_mode == mode)
             item.connect("toggled", lambda check, value=mode: check.get_active() and self.set_mirror_layout_mode(value))
             layout_menu.append(item)
+        layout_menu.append(Gtk.SeparatorMenuItem())
+        columns_label = "Columnas max: sin limite" if self.max_layout_columns is None else f"Columnas max: {self.max_layout_columns}"
+        rows_label = "Filas max: sin limite" if self.max_layout_rows is None else f"Filas max: {self.max_layout_rows}"
+        columns_item = Gtk.MenuItem(label=columns_label)
+        columns_item.connect("activate", lambda *_args: self.choose_layout_limit("columns"))
+        layout_menu.append(columns_item)
+        rows_item = Gtk.MenuItem(label=rows_label)
+        rows_item.connect("activate", lambda *_args: self.choose_layout_limit("rows"))
+        layout_menu.append(rows_item)
+        clear_limits_item = Gtk.MenuItem(label="Quitar limites")
+        clear_limits_item.connect("activate", lambda *_args: self.set_layout_limits(None, None))
+        layout_menu.append(clear_limits_item)
         layout_item = Gtk.MenuItem(label="Forma de mirrors")
         layout_item.set_submenu(layout_menu)
         menu.append(layout_item)
@@ -3124,6 +3261,44 @@ class SimpleLauncherPanel:
         self.current_rows = 0
         self.fit_tiles_to_window()
         self.save_state()
+
+    def set_layout_limits(self, max_columns=None, max_rows=None):
+        self.max_layout_columns = normalize_layout_limit(max_columns)
+        self.max_layout_rows = normalize_layout_limit(max_rows)
+        self.current_columns = 0
+        self.current_rows = 0
+        self.fit_tiles_to_window()
+        self.save_state()
+
+    def choose_layout_limit(self, axis):
+        is_columns = axis == "columns"
+        current = self.max_layout_columns if is_columns else self.max_layout_rows
+        dialog = Gtk.Dialog(
+            title="Limite de columnas" if is_columns else "Limite de filas",
+            transient_for=self.win,
+            flags=0,
+        )
+        dialog.add_button("Sin limite", Gtk.ResponseType.NO)
+        dialog.add_button("Cancelar", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Guardar", Gtk.ResponseType.OK)
+        box = dialog.get_content_area()
+        adjustment = Gtk.Adjustment(value=current or 4, lower=1, upper=MAX_LAYOUT_LIMIT, step_increment=1, page_increment=4)
+        spin = Gtk.SpinButton(adjustment=adjustment, climb_rate=1, digits=0)
+        spin.set_numeric(True)
+        box.pack_start(spin, False, False, 8)
+        dialog.show_all()
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            if is_columns:
+                self.set_layout_limits(spin.get_value_as_int(), self.max_layout_rows)
+            else:
+                self.set_layout_limits(self.max_layout_columns, spin.get_value_as_int())
+        elif response == Gtk.ResponseType.NO:
+            if is_columns:
+                self.set_layout_limits(None, self.max_layout_rows)
+            else:
+                self.set_layout_limits(self.max_layout_columns, None)
+        dialog.destroy()
 
     def set_window_decorated(self, active):
         self.window_decorated = bool(active)

@@ -212,6 +212,18 @@ def build_parser():
         help="Forma de los mirrors en Winmirror Bar",
     )
     parser.add_argument(
+        "--max-layout-columns",
+        type=int,
+        default=None,
+        help="Limita columnas maximas del panel simple (0 o ausente = sin limite)",
+    )
+    parser.add_argument(
+        "--max-layout-rows",
+        type=int,
+        default=None,
+        help="Limita filas maximas del panel simple (0 o ausente = sin limite)",
+    )
+    parser.add_argument(
         "--show-borders",
         action="store_true",
         default=None,
@@ -353,6 +365,16 @@ def main(argv=None):
             hover_mode=hover_mode,
             hover_scale=args.hover_scale if args.hover_scale is not None else simple_state.get("hover_scale"),
             mirror_layout_mode=args.mirror_layout or simple_state.get("mirror_layout_mode", "grid"),
+            max_layout_columns=(
+                args.max_layout_columns
+                if args.max_layout_columns is not None
+                else simple_state.get("max_layout_columns")
+            ),
+            max_layout_rows=(
+                args.max_layout_rows
+                if args.max_layout_rows is not None
+                else simple_state.get("max_layout_rows")
+            ),
             show_borders=args.show_borders if args.show_borders is not None else simple_state.get("show_borders", False),
             order_mode=args.order or simple_state.get("order_mode", "last-used"),
             label_mode=args.label_mode or simple_state.get("label_mode", "title"),
