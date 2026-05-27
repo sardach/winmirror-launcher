@@ -36,7 +36,7 @@ DEFAULT_TILE_HEIGHT = 72
 WINDOW_REFRESH_MS = 1800
 ACTIVE_WINDOW_POLL_MS = 500
 ORDER_MODES = {"manual", "name", "last-used"}
-LABEL_MODES = {"title", "app"}
+LABEL_MODES = {"title", "app", "icon"}
 IDLE_MODES = {"off", "collapse", "hide"}
 CLOCK_MODES = {"time", "time-seconds", "date-time", "full"}
 MIRROR_LAYOUT_MODES = {"grid", "triangles"}
@@ -1403,6 +1403,7 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         self.interval_ms = interval_seconds_to_ms(frame_interval_seconds) or refresh_interval_ms(fps)
         self.source_window = None
         self.current_pixbuf = None
+        self.app_icon_cache = {}
         self.status = ""
         self.show_title = bool(show_title)
         self.show_close = bool(show_close)
@@ -1530,53 +1531,101 @@ class SimpleMirrorTile(Gtk.DrawingArea):
             and self.panel.triangle_flow == "vertical"
         )
 
+    def sample_luminance(self, x, y, width, height):
+        if self.current_pixbuf is None:
+            return 0.18
+        pixbuf = self.current_pixbuf
+        src_w = max(1, pixbuf.get_width())
+        src_h = max(1, pixbuf.get_height())
+        scale = min(float(max(1, self.layout_width)) / src_w, float(max(1, self.layout_height)) / src_h)
+        draw_w = src_w * scale
+        draw_h = src_h * scale
+        off_x = (max(1, self.layout_width) - draw_w) / 2.0
+        off_y = (max(1, self.layout_height) - draw_h) / 2.0
+        channels = pixbuf.get_n_channels()
+        rowstride = pixbuf.get_rowstride()
+        pixels = pixbuf.get_pixels()
+        total = 0.0
+        samples = 0
+        for px, py in ((x + width * 0.3, y + height * 0.35), (x + width * 0.5, y + height * 0.5), (x + width * 0.7, y + height * 0.65)):
+            src_x = int((px - off_x) / scale) if scale > 0 else 0
+            src_y = int((py - off_y) / scale) if scale > 0 else 0
+            if not (0 <= src_x < src_w and 0 <= src_y < src_h):
+                continue
+            index = src_y * rowstride + src_x * channels
+            red = pixels[index]
+            green = pixels[index + 1]
+            blue = pixels[index + 2]
+            total += (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255.0
+            samples += 1
+        return total / samples if samples else 0.18
+
+    def overlay_colors_for_rect(self, x, y, width, height):
+        luminance = self.sample_luminance(x, y, width, height)
+        if luminance > 0.58:
+            return (1.0, 1.0, 1.0, 0.58), (0.02, 0.02, 0.02)
+        return (0.0, 0.0, 0.0, 0.62), (0.95, 0.95, 0.95)
+
     def title_band_rect(self, width, height, text_height):
         if self.in_vertical_triangle_flow() and self.triangle_orientation in {"left", "right"}:
-            band_width = int(max(18, min(28, width * 0.28)))
-            if self.triangle_orientation == "right":
-                return (0, 0, band_width, height)
-            return (max(0, width - band_width), 0, band_width, height)
+            band_width = int(max(42, min(width - 8, width * 0.68)))
+            band_height = int(max(text_height + 6, min(26, height * 0.42)))
+            return (
+                max(4, int((width - band_width) / 2)),
+                max(3, int((height - band_height) / 2)),
+                max(1, band_width),
+                max(1, band_height),
+            )
         if self.triangle_orientation in {"down", "right"}:
             return (0, 0, width, text_height + 5)
         return (0, max(0, height - text_height - 5), width, text_height + 5)
 
+    def draw_app_icon_overlay(self, cr, width, height):
+        icon_size = int(max(16, min(42, min(width, height) * 0.38)))
+        rect_w = icon_size + 8
+        rect_h = icon_size + 8
+        rect_x = max(3, int((width - rect_w) / 2))
+        rect_y = max(3, int((height - rect_h) / 2))
+        bg, _fg = self.overlay_colors_for_rect(rect_x, rect_y, rect_w, rect_h)
+        cr.set_source_rgba(*bg)
+        cr.rectangle(rect_x, rect_y, rect_w, rect_h)
+        cr.fill()
+        pixbuf = self.load_app_icon(icon_size)
+        if pixbuf is not None:
+            Gdk.cairo_set_source_pixbuf(cr, pixbuf, rect_x + 4, rect_y + 4)
+            cr.paint()
+            return
+        label = (app_name_from_wm_class(self.window_info.wm_class)[:1] or "?").upper()
+        layout = self.create_pango_layout(label)
+        layout.set_font_description(Pango.FontDescription(f"Sans Bold {max(10, icon_size // 2)}"))
+        tw, th = layout.get_pixel_size()
+        _bg, fg = self.overlay_colors_for_rect(rect_x, rect_y, rect_w, rect_h)
+        cr.set_source_rgb(*fg)
+        cr.move_to(rect_x + (rect_w - tw) / 2.0, rect_y + (rect_h - th) / 2.0)
+        PangoCairo.show_layout(cr, layout)
+
     def draw_title_overlay(self, widget, cr, width, height):
+        if self.label_mode == "icon":
+            self.draw_app_icon_overlay(cr, width, height)
+            return
         vertical_flow = self.in_vertical_triangle_flow() and self.triangle_orientation in {"left", "right"}
-        title = self.display_name()[:36 if vertical_flow else 42]
-        font_size = 8 if vertical_flow else (7 if width < 96 else 8)
+        title = self.display_name()[:26 if vertical_flow else 42]
+        font_size = 7 if vertical_flow else (7 if width < 96 else 8)
         layout = widget.create_pango_layout(title)
-        layout.set_font_description(Pango.FontDescription(f"Sans {font_size}"))
+        layout.set_font_description(Pango.FontDescription(f"Sans Bold {font_size}" if vertical_flow else f"Sans {font_size}"))
         layout.set_ellipsize(Pango.EllipsizeMode.END)
         layout.set_alignment(Pango.Alignment.CENTER)
-
-        if vertical_flow:
-            band_x, band_y, band_w, band_h = self.title_band_rect(width, height, font_size + 5)
-            layout.set_width(max(1, band_h - 10) * Pango.SCALE)
-            tw, th = layout.get_pixel_size()
-            cr.set_source_rgba(0.0, 0.0, 0.0, 0.72)
-            cr.rectangle(band_x, band_y, band_w, band_h)
-            cr.fill()
-            cr.save()
-            if self.triangle_orientation == "right":
-                cr.translate(band_x + max(1, (band_w - th) / 2.0), band_y + band_h - max(5, (band_h - tw) / 2.0))
-                cr.rotate(-math.pi / 2.0)
-            else:
-                cr.translate(band_x + band_w - max(1, (band_w - th) / 2.0), band_y + max(5, (band_h - tw) / 2.0))
-                cr.rotate(math.pi / 2.0)
-            cr.set_source_rgb(0.94, 0.94, 0.94)
-            PangoCairo.show_layout(cr, layout)
-            cr.restore()
-            return
-
-        layout.set_width(max(1, width - 8) * Pango.SCALE)
         _tw, th = layout.get_pixel_size()
         band_x, band_y, band_w, band_h = self.title_band_rect(width, height, th)
-        text_y = band_y + 2 if band_y == 0 else max(1, band_y + 2)
-        cr.set_source_rgba(0.0, 0.0, 0.0, 0.68)
+        layout.set_width(max(1, band_w - 8) * Pango.SCALE)
+        _tw, th = layout.get_pixel_size()
+        bg, fg = self.overlay_colors_for_rect(band_x, band_y, band_w, band_h)
+        text_y = band_y + max(1, int((band_h - th) / 2))
+        cr.set_source_rgba(*bg)
         cr.rectangle(band_x, band_y, band_w, band_h)
         cr.fill()
-        cr.set_source_rgb(0.92, 0.92, 0.92)
-        cr.move_to(4, text_y)
+        cr.set_source_rgb(*fg)
+        cr.move_to(band_x + 4, text_y)
         PangoCairo.show_layout(cr, layout)
 
     def release_layout_size(self):
@@ -1621,6 +1670,34 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         if self.label_mode == "app":
             return app_name_from_wm_class(self.window_info.wm_class)
         return self.window_info.title or app_name_from_wm_class(self.window_info.wm_class)
+
+    def app_icon_candidates(self):
+        names = []
+        for value in (self.window_info.wm_class, app_name_from_wm_class(self.window_info.wm_class)):
+            for part in str(value or "").replace(".", " ").split():
+                part = part.strip()
+                if part:
+                    names.extend((part, part.lower(), part.casefold()))
+        seen = set()
+        return [name for name in names if not (name in seen or seen.add(name))]
+
+    def load_app_icon(self, size):
+        size = int(max(12, min(96, size)))
+        key = (self.window_info.wm_class, size)
+        if key in self.app_icon_cache:
+            return self.app_icon_cache[key]
+        pixbuf = None
+        theme = Gtk.IconTheme.get_default()
+        if theme is not None:
+            for name in self.app_icon_candidates():
+                try:
+                    pixbuf = theme.load_icon(name, size, Gtk.IconLookupFlags.FORCE_SIZE)
+                except GLib.Error:
+                    pixbuf = None
+                if pixbuf is not None:
+                    break
+        self.app_icon_cache[key] = pixbuf
+        return pixbuf
 
     def attach_source(self):
         display = Gdk.Display.get_default()
@@ -2732,7 +2809,10 @@ class SimpleLauncherPanel:
                 y = int(round(row * self.tile_height))
             if isinstance(widget, SimpleMirrorTile):
                 if flow == "vertical":
-                    widget.set_triangle_orientation("right" if cursor % 2 == 0 else "left")
+                    if row == 0 and columns > 1:
+                        widget.set_triangle_orientation(None)
+                    else:
+                        widget.set_triangle_orientation("right" if cursor % 2 == 0 else "left")
                 else:
                     widget.set_triangle_orientation("down" if cursor % 2 == 0 else "up")
                 widget.set_layout_size(self.tile_width, self.tile_height)
@@ -3235,7 +3315,7 @@ class SimpleLauncherPanel:
         menu.append(fps_item)
 
         label_menu = Gtk.Menu()
-        for label, mode in (("Titulo de ventana", "title"), ("App / ejecutable", "app")):
+        for label, mode in (("Titulo de ventana", "title"), ("App / ejecutable", "app"), ("Icono de app", "icon")):
             item = Gtk.RadioMenuItem.new_with_label_from_widget(
                 label_menu.get_children()[0] if label_menu.get_children() else None,
                 label,
