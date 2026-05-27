@@ -39,7 +39,7 @@ ORDER_MODES = {"manual", "name", "last-used"}
 LABEL_MODES = {"title", "app", "icon"}
 IDLE_MODES = {"off", "collapse", "hide"}
 CLOCK_MODES = {"time", "time-seconds", "date-time", "full"}
-MIRROR_LAYOUT_MODES = {"grid", "triangles"}
+MIRROR_LAYOUT_MODES = {"grid", "hexagons", "triangles"}
 TINT2_PROFILES = {"default", "chema-compact"}
 TINT2_PLACEMENTS = {"cell", "top", "bottom", "left", "right"}
 MIN_TINT2_SLOT_UNITS = 1
@@ -1470,14 +1470,21 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         self.set_size_request(self.layout_width, self.layout_height)
 
     def set_triangle_orientation(self, orientation):
-        orientation = orientation if orientation in {"up", "down", "left", "right"} else None
+        orientation = orientation if orientation in {"up", "down", "left", "right", "hex"} else None
         if self.triangle_orientation == orientation:
             return
         self.triangle_orientation = orientation
         self.queue_draw()
 
     def triangle_path(self, cr, width, height):
-        if self.triangle_orientation == "down":
+        if self.triangle_orientation == "hex":
+            cr.move_to(width * 0.25, 0)
+            cr.line_to(width * 0.75, 0)
+            cr.line_to(width, height * 0.5)
+            cr.line_to(width * 0.75, height)
+            cr.line_to(width * 0.25, height)
+            cr.line_to(0, height * 0.5)
+        elif self.triangle_orientation == "down":
             cr.move_to(0, 0)
             cr.line_to(width, 0)
             cr.line_to(width / 2.0, height)
@@ -1496,7 +1503,7 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         cr.close_path()
 
     def point_in_triangle(self, x, y, width, height):
-        if self.triangle_orientation not in {"up", "down", "left", "right"}:
+        if self.triangle_orientation not in {"up", "down", "left", "right", "hex"}:
             return True
         width = max(1.0, float(width))
         height = max(1.0, float(height))
@@ -1504,6 +1511,12 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         y = float(y)
         if not (0 <= x <= width and 0 <= y <= height):
             return False
+        if self.triangle_orientation == "hex":
+            if y <= height / 2.0:
+                inset = (0.25 * width) * (1.0 - (y / max(1.0, height / 2.0)))
+            else:
+                inset = (0.25 * width) * ((y - (height / 2.0)) / max(1.0, height / 2.0))
+            return inset <= x <= width - inset
         if self.triangle_orientation in {"up", "down"}:
             half_span = (y / height) * (width / 2.0) if self.triangle_orientation == "up" else ((height - y) / height) * (width / 2.0)
             center = width / 2.0
@@ -1522,6 +1535,8 @@ class SimpleMirrorTile(Gtk.DrawingArea):
             return (0, max(0, (height - size) / 2.0), size, size)
         if self.triangle_orientation == "right":
             return (max(0, width - size), max(0, (height - size) / 2.0), size, size)
+        if self.triangle_orientation == "hex":
+            return (max(0, width - size - 2), 2, size, size)
         return (max(0, width - size), 0, size, size)
 
     def in_vertical_triangle_flow(self):
@@ -1844,7 +1859,7 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         width = max(1, alloc.width)
         height = max(1, alloc.height)
 
-        is_triangle = self.triangle_orientation in {"up", "down", "left", "right"}
+        is_triangle = self.triangle_orientation in {"up", "down", "left", "right", "hex"}
         if not is_triangle:
             clear_background(cr)
 
@@ -1902,7 +1917,7 @@ class SimpleMirrorTile(Gtk.DrawingArea):
     def draw_border(self, cr, width, height):
         cr.set_source_rgb(0.18, 0.18, 0.18)
         cr.set_line_width(1.0)
-        if self.triangle_orientation in {"up", "down", "left", "right"}:
+        if self.triangle_orientation in {"up", "down", "left", "right", "hex"}:
             self.triangle_path(cr, width, height)
         else:
             cr.rectangle(0.5, 0.5, max(0, width - 1), max(0, height - 1))
@@ -2746,6 +2761,73 @@ class SimpleLauncherPanel:
             return True
         return False
 
+    def choose_hexagon_shape(self, width, height, entries):
+        if not entries:
+            return 1, 1, max(1, int(width)), max(1, int(height))
+        width = max(1, int(width))
+        height = max(1, int(height))
+        slot_count = sum(units for _widget, units in entries)
+        max_columns = min(max(1, slot_count), self.max_layout_columns or max(1, slot_count))
+        best = None
+        for columns in range(1, max_columns + 1):
+            rows = self.layout_rows_for_entries(entries, columns)
+            if self.max_layout_rows is not None and rows > self.max_layout_rows:
+                continue
+            hex_width = width / (1.0 + max(0, columns - 1) * 0.75)
+            hex_height = height / (rows + (0.5 if columns > 1 else 0.0))
+            visible_area = min(hex_width, MAX_TILE_WIDTH) * min(hex_height, MAX_TILE_HEIGHT) * 0.75
+            aspect = hex_width / max(1.0, hex_height)
+            aspect_penalty = abs(math.log(max(0.1, aspect / 1.08)))
+            empty_slots = (columns * rows) - slot_count
+            score = visible_area - (visible_area * aspect_penalty * 0.14) - (empty_slots * 18)
+            if height > width and columns > 2:
+                score -= (columns - 2) * 28
+            if best is None or score > best[0]:
+                best = (score, columns, rows, hex_width, hex_height)
+        if best is None:
+            columns = min(max_columns, max(1, slot_count))
+            rows = self.layout_rows_for_entries(entries, columns)
+            return columns, rows, max(1, int(width / (1.0 + max(0, columns - 1) * 0.75))), max(1, int(height / max(1, rows)))
+        return best[1], best[2], max(1, int(best[3])), max(1, int(best[4]))
+
+    def fit_hexagonal_layout(self, width, height):
+        visible_tiles = self.visible_tiles()
+        for tile in self.tiles:
+            tile.set_visible(tile in visible_tiles)
+            tile.set_triangle_orientation(None)
+        entries = self.layout_entries()
+        columns, rows, tile_width, tile_height = self.choose_hexagon_shape(width, height, entries)
+        self.current_columns = columns
+        self.current_rows = rows
+        self.tile_width = clamp(tile_width, MIN_TILE_WIDTH, MAX_TILE_WIDTH, self.tile_width)
+        self.tile_height = clamp(tile_height, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, self.tile_height)
+
+        for widget, index, span in self.iter_layout_positions(entries, columns):
+            row = index // columns
+            column = index % columns
+            x = int(round(column * self.tile_width * 0.75))
+            y = int(round(row * self.tile_height + (self.tile_height * 0.5 if column % 2 else 0)))
+            if isinstance(widget, SimpleMirrorTile):
+                widget.set_triangle_orientation("hex")
+                widget.set_layout_size(self.tile_width, self.tile_height)
+                self.grid.move(widget, x, y)
+                widget.show()
+                continue
+            width_px = self.tile_width * (1.0 + max(0, span - 1) * 0.75)
+            height_px = self.tile_height
+            widget.set_size_request(max(1, int(width_px)), max(1, int(height_px)))
+            if isinstance(widget, LauncherGrid):
+                widget.set_layout_size(width_px, height_px)
+            self.grid.move(widget, x, y)
+            if widget is self.tint2_slot:
+                self.update_tint2_target_rect(x, y, width_px, height_px)
+        self.clock_slot.set_visible(self.show_clock)
+        self.launcher_grid.set_visible(self.show_launchers)
+        self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
+        self.update_detached_tint2_target()
+        self.grid.queue_resize()
+        self.win.queue_resize()
+
     def fit_triangular_layout(self, width, height):
         visible_tiles = self.visible_tiles()
         for tile in self.tiles:
@@ -2826,11 +2908,14 @@ class SimpleLauncherPanel:
         self.win.queue_resize()
 
     def relayout_tiles(self, columns, rows):
-        if self.mirror_layout_mode == "triangles":
+        if self.mirror_layout_mode in {"hexagons", "triangles"}:
             alloc = self.grid.get_allocation()
             if alloc.width <= 1 or alloc.height <= 1:
                 alloc = self.win.get_allocation()
-            self.fit_triangular_layout(max(1, alloc.width), max(1, alloc.height))
+            if self.mirror_layout_mode == "hexagons":
+                self.fit_hexagonal_layout(max(1, alloc.width), max(1, alloc.height))
+            else:
+                self.fit_triangular_layout(max(1, alloc.width), max(1, alloc.height))
             return
         columns = max(1, int(columns))
         entries = self.layout_entries()
@@ -2866,6 +2951,14 @@ class SimpleLauncherPanel:
         width = alloc.width
         height = alloc.height
         if width <= 1 or height <= 1:
+            return
+        if self.mirror_layout_mode == "hexagons":
+            self.fit_hexagonal_layout(width, height)
+            self.apply_tile_size_requests()
+            return
+        if self.mirror_layout_mode == "triangles":
+            self.fit_triangular_layout(width, height)
+            self.apply_tile_size_requests()
             return
         entries = self.layout_entries()
         slot_count = sum(units for _widget, units in entries)
@@ -2993,11 +3086,14 @@ class SimpleLauncherPanel:
         self.fit_tiles_to_window()
 
     def apply_tile_size_requests(self):
-        if self.mirror_layout_mode == "triangles":
+        if self.mirror_layout_mode in {"hexagons", "triangles"}:
             alloc = self.grid.get_allocation()
             if alloc.width <= 1 or alloc.height <= 1:
                 alloc = self.win.get_allocation()
-            self.fit_triangular_layout(max(1, alloc.width), max(1, alloc.height))
+            if self.mirror_layout_mode == "hexagons":
+                self.fit_hexagonal_layout(max(1, alloc.width), max(1, alloc.height))
+            else:
+                self.fit_triangular_layout(max(1, alloc.width), max(1, alloc.height))
             return
         visible_tiles = self.visible_tiles()
         entries = self.layout_entries()
@@ -3233,7 +3329,7 @@ class SimpleLauncherPanel:
 
         layout_menu = Gtk.Menu()
         layout_group = None
-        for label, mode in (("Rectangulos", "grid"), ("Triangulos", "triangles")):
+        for label, mode in (("Rectangulos", "grid"), ("Hexagonos", "hexagons"), ("Triangulos", "triangles")):
             item = Gtk.RadioMenuItem.new_with_label_from_widget(layout_group, label)
             if layout_group is None:
                 layout_group = item
