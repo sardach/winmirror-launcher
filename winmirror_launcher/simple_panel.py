@@ -40,18 +40,22 @@ LABEL_MODES = {"title", "app", "icon"}
 IDLE_MODES = {"off", "collapse", "hide"}
 CLOCK_MODES = {"time", "time-seconds", "date-time", "full"}
 MIRROR_LAYOUT_MODES = {
+    "blobs",
     "equilateral-triangles",
     "grid",
     "hexagons",
     "right-triangles",
     "scalene-triangles",
     "square-grid",
+    "voronoi",
     "triangles",
 }
 MIRROR_LAYOUT_CYCLE = (
     "grid",
     "square-grid",
     "hexagons",
+    "blobs",
+    "voronoi",
     "triangles",
     "equilateral-triangles",
     "right-triangles",
@@ -1490,14 +1494,28 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         self.set_size_request(self.layout_width, self.layout_height)
 
     def set_triangle_orientation(self, orientation):
-        orientation = orientation if orientation in {"up", "down", "left", "right", "hex", "right-nw", "right-se", "scalene-a", "scalene-b"} else None
+        orientation = orientation if orientation in {
+            "blob",
+            "up",
+            "down",
+            "left",
+            "right",
+            "hex",
+            "right-nw",
+            "right-se",
+            "scalene-a",
+            "scalene-b",
+            "voronoi",
+        } else None
         if self.triangle_orientation == orientation:
             return
         self.triangle_orientation = orientation
         self.queue_draw()
 
     def triangle_path(self, cr, width, height):
-        if self.triangle_orientation == "hex":
+        if self.triangle_orientation == "blob":
+            self.blob_path(cr, width, height)
+        elif self.triangle_orientation == "hex":
             cr.move_to(width * 0.25, 0)
             cr.line_to(width * 0.75, 0)
             cr.line_to(width, height * 0.5)
@@ -1532,14 +1550,49 @@ class SimpleMirrorTile(Gtk.DrawingArea):
             cr.move_to(width, height)
             cr.line_to(0, height)
             cr.line_to(width * 0.78, 0)
+        elif self.triangle_orientation == "voronoi":
+            self.voronoi_path(cr, width, height)
         else:
             cr.move_to(width / 2.0, 0)
             cr.line_to(width, height)
             cr.line_to(0, height)
         cr.close_path()
 
+    def blob_path(self, cr, width, height):
+        pad_x = width * 0.05
+        pad_y = height * 0.07
+        cr.move_to(width * 0.52, pad_y)
+        cr.curve_to(width * 0.82, pad_y * 0.3, width - pad_x * 0.2, height * 0.22, width - pad_x, height * 0.5)
+        cr.curve_to(width - pad_x * 0.3, height * 0.78, width * 0.74, height - pad_y * 0.2, width * 0.48, height - pad_y)
+        cr.curve_to(width * 0.20, height - pad_y * 0.2, pad_x * 0.2, height * 0.74, pad_x, height * 0.48)
+        cr.curve_to(pad_x * 0.2, height * 0.20, width * 0.24, pad_y * 0.2, width * 0.52, pad_y)
+
+    def voronoi_points(self, width, height):
+        seed = int(self.window_info.window_id) if self.window_info is not None else 1
+        offsets = []
+        value = seed or 1
+        for _index in range(8):
+            value = (1103515245 * value + 12345) & 0x7FFFFFFF
+            offsets.append(((value % 17) - 8) / 100.0)
+        return [
+            (width * (0.24 + offsets[0]), 0),
+            (width * (0.72 + offsets[1]), 0),
+            (width, height * (0.25 + offsets[2])),
+            (width, height * (0.72 + offsets[3])),
+            (width * (0.76 + offsets[4]), height),
+            (width * (0.28 + offsets[5]), height),
+            (0, height * (0.76 + offsets[6])),
+            (0, height * (0.28 + offsets[7])),
+        ]
+
+    def voronoi_path(self, cr, width, height):
+        points = self.voronoi_points(width, height)
+        cr.move_to(*points[0])
+        for point in points[1:]:
+            cr.line_to(*point)
+
     def point_in_triangle(self, x, y, width, height):
-        if self.triangle_orientation not in {"up", "down", "left", "right", "hex", "right-nw", "right-se", "scalene-a", "scalene-b"}:
+        if self.triangle_orientation not in {"blob", "up", "down", "left", "right", "hex", "right-nw", "right-se", "scalene-a", "scalene-b", "voronoi"}:
             return True
         width = max(1.0, float(width))
         height = max(1.0, float(height))
@@ -1547,6 +1600,12 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         y = float(y)
         if not (0 <= x <= width and 0 <= y <= height):
             return False
+        if self.triangle_orientation == "blob":
+            dx = (x - width / 2.0) / max(1.0, width * 0.48)
+            dy = (y - height / 2.0) / max(1.0, height * 0.46)
+            return (dx * dx + dy * dy) <= 1.12
+        if self.triangle_orientation == "voronoi":
+            return self.point_in_polygon(x, y, self.voronoi_points(width, height))
         if self.triangle_orientation == "hex":
             if y <= height / 2.0:
                 inset = (0.25 * width) * (1.0 - (y / max(1.0, height / 2.0)))
@@ -1571,6 +1630,19 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         center = height / 2.0
         return center - half_span <= y <= center + half_span
 
+    def point_in_polygon(self, x, y, points):
+        inside = False
+        count = len(points)
+        j = count - 1
+        for i in range(count):
+            xi, yi = points[i]
+            xj, yj = points[j]
+            intersects = ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / max(0.001, yj - yi) + xi)
+            if intersects:
+                inside = not inside
+            j = i
+        return inside
+
     def close_icon_rect(self, width, height):
         size = int(max(14, min(18, min(width, height) * 0.32)))
         if self.triangle_orientation == "up":
@@ -1583,6 +1655,8 @@ class SimpleMirrorTile(Gtk.DrawingArea):
             return (max(0, width - size), max(0, (height - size) / 2.0), size, size)
         if self.triangle_orientation == "hex":
             return (max(0, width - size - 2), 2, size, size)
+        if self.triangle_orientation in {"blob", "voronoi"}:
+            return (max(0, width - size - 3), 3, size, size)
         if self.triangle_orientation == "right-nw":
             return (2, 2, size, size)
         if self.triangle_orientation == "right-se":
@@ -1913,7 +1987,7 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         width = max(1, alloc.width)
         height = max(1, alloc.height)
 
-        is_triangle = self.triangle_orientation in {"up", "down", "left", "right", "hex", "right-nw", "right-se", "scalene-a", "scalene-b"}
+        is_triangle = self.triangle_orientation in {"blob", "up", "down", "left", "right", "hex", "right-nw", "right-se", "scalene-a", "scalene-b", "voronoi"}
         if not is_triangle:
             clear_background(cr)
 
@@ -1971,7 +2045,7 @@ class SimpleMirrorTile(Gtk.DrawingArea):
     def draw_border(self, cr, width, height):
         cr.set_source_rgb(0.18, 0.18, 0.18)
         cr.set_line_width(1.0)
-        if self.triangle_orientation in {"up", "down", "left", "right", "hex", "right-nw", "right-se", "scalene-a", "scalene-b"}:
+        if self.triangle_orientation in {"blob", "up", "down", "left", "right", "hex", "right-nw", "right-se", "scalene-a", "scalene-b", "voronoi"}:
             self.triangle_path(cr, width, height)
         else:
             cr.rectangle(0.5, 0.5, max(0, width - 1), max(0, height - 1))
@@ -2891,6 +2965,44 @@ class SimpleLauncherPanel:
         self.grid.queue_resize()
         self.win.queue_resize()
 
+    def fit_shape_grid_layout(self, width, height, shape):
+        visible_tiles = self.visible_tiles()
+        for tile in self.tiles:
+            tile.set_visible(tile in visible_tiles)
+            tile.set_triangle_orientation(None)
+        entries = self.layout_entries()
+        slot_count = sum(units for _widget, units in entries)
+        columns, rows = self.choose_grid_shape(width, height, slot_count)
+        rows = self.layout_rows_for_entries(entries, columns)
+        self.current_columns = columns
+        self.current_rows = rows
+        self.tile_width = clamp(width // columns, MIN_TILE_WIDTH, MAX_TILE_WIDTH, self.tile_width)
+        self.tile_height = clamp(height // rows, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, self.tile_height)
+        for widget, index, span in self.iter_layout_positions(entries, columns):
+            row = index // columns
+            column = index % columns
+            x = int(round(column * self.tile_width))
+            y = int(round(row * self.tile_height))
+            if isinstance(widget, SimpleMirrorTile):
+                widget.set_triangle_orientation(shape)
+                widget.set_layout_size(self.tile_width, self.tile_height)
+                self.grid.move(widget, x, y)
+                widget.show()
+                continue
+            width_px = self.tile_width * max(1, span)
+            widget.set_size_request(max(1, int(width_px)), max(1, int(self.tile_height)))
+            if isinstance(widget, LauncherGrid):
+                widget.set_layout_size(width_px, self.tile_height)
+            self.grid.move(widget, x, y)
+            if widget is self.tint2_slot:
+                self.update_tint2_target_rect(x, y, width_px, self.tile_height)
+        self.clock_slot.set_visible(self.show_clock)
+        self.launcher_grid.set_visible(self.show_launchers)
+        self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
+        self.update_detached_tint2_target()
+        self.grid.queue_resize()
+        self.win.queue_resize()
+
     def fit_hexagonal_layout(self, width, height):
         visible_tiles = self.visible_tiles()
         for tile in self.tiles:
@@ -3205,11 +3317,13 @@ class SimpleLauncherPanel:
         self.win.queue_resize()
 
     def relayout_tiles(self, columns, rows):
-        if self.mirror_layout_mode in {"equilateral-triangles", "hexagons", "right-triangles", "scalene-triangles", "square-grid", "triangles"}:
+        if self.mirror_layout_mode in {"blobs", "equilateral-triangles", "hexagons", "right-triangles", "scalene-triangles", "square-grid", "triangles", "voronoi"}:
             alloc = self.grid.get_allocation()
             if alloc.width <= 1 or alloc.height <= 1:
                 alloc = self.win.get_allocation()
-            if self.mirror_layout_mode == "equilateral-triangles":
+            if self.mirror_layout_mode == "blobs":
+                self.fit_shape_grid_layout(max(1, alloc.width), max(1, alloc.height), "blob")
+            elif self.mirror_layout_mode == "equilateral-triangles":
                 self.fit_equilateral_triangle_layout(max(1, alloc.width), max(1, alloc.height))
             elif self.mirror_layout_mode == "hexagons":
                 self.fit_hexagonal_layout(max(1, alloc.width), max(1, alloc.height))
@@ -3219,6 +3333,8 @@ class SimpleLauncherPanel:
                 self.fit_scalene_triangle_layout(max(1, alloc.width), max(1, alloc.height))
             elif self.mirror_layout_mode == "square-grid":
                 self.fit_square_grid_layout(max(1, alloc.width), max(1, alloc.height))
+            elif self.mirror_layout_mode == "voronoi":
+                self.fit_shape_grid_layout(max(1, alloc.width), max(1, alloc.height), "voronoi")
             else:
                 self.fit_triangular_layout(max(1, alloc.width), max(1, alloc.height))
             return
@@ -3257,8 +3373,10 @@ class SimpleLauncherPanel:
         height = alloc.height
         if width <= 1 or height <= 1:
             return
-        if self.mirror_layout_mode in {"equilateral-triangles", "hexagons", "right-triangles", "scalene-triangles", "square-grid", "triangles"}:
-            if self.mirror_layout_mode == "equilateral-triangles":
+        if self.mirror_layout_mode in {"blobs", "equilateral-triangles", "hexagons", "right-triangles", "scalene-triangles", "square-grid", "triangles", "voronoi"}:
+            if self.mirror_layout_mode == "blobs":
+                self.fit_shape_grid_layout(width, height, "blob")
+            elif self.mirror_layout_mode == "equilateral-triangles":
                 self.fit_equilateral_triangle_layout(width, height)
             elif self.mirror_layout_mode == "hexagons":
                 self.fit_hexagonal_layout(width, height)
@@ -3268,6 +3386,8 @@ class SimpleLauncherPanel:
                 self.fit_scalene_triangle_layout(width, height)
             elif self.mirror_layout_mode == "square-grid":
                 self.fit_square_grid_layout(width, height)
+            elif self.mirror_layout_mode == "voronoi":
+                self.fit_shape_grid_layout(width, height, "voronoi")
             else:
                 self.fit_triangular_layout(width, height)
             self.apply_tile_size_requests()
@@ -3398,11 +3518,13 @@ class SimpleLauncherPanel:
         self.fit_tiles_to_window()
 
     def apply_tile_size_requests(self):
-        if self.mirror_layout_mode in {"equilateral-triangles", "hexagons", "right-triangles", "scalene-triangles", "square-grid", "triangles"}:
+        if self.mirror_layout_mode in {"blobs", "equilateral-triangles", "hexagons", "right-triangles", "scalene-triangles", "square-grid", "triangles", "voronoi"}:
             alloc = self.grid.get_allocation()
             if alloc.width <= 1 or alloc.height <= 1:
                 alloc = self.win.get_allocation()
-            if self.mirror_layout_mode == "equilateral-triangles":
+            if self.mirror_layout_mode == "blobs":
+                self.fit_shape_grid_layout(max(1, alloc.width), max(1, alloc.height), "blob")
+            elif self.mirror_layout_mode == "equilateral-triangles":
                 self.fit_equilateral_triangle_layout(max(1, alloc.width), max(1, alloc.height))
             elif self.mirror_layout_mode == "hexagons":
                 self.fit_hexagonal_layout(max(1, alloc.width), max(1, alloc.height))
@@ -3412,6 +3534,8 @@ class SimpleLauncherPanel:
                 self.fit_scalene_triangle_layout(max(1, alloc.width), max(1, alloc.height))
             elif self.mirror_layout_mode == "square-grid":
                 self.fit_square_grid_layout(max(1, alloc.width), max(1, alloc.height))
+            elif self.mirror_layout_mode == "voronoi":
+                self.fit_shape_grid_layout(max(1, alloc.width), max(1, alloc.height), "voronoi")
             else:
                 self.fit_triangular_layout(max(1, alloc.width), max(1, alloc.height))
             return
@@ -3653,6 +3777,8 @@ class SimpleLauncherPanel:
             ("Cuadricula rectangular", "grid"),
             ("Cuadricula cuadrada", "square-grid"),
             ("Hexagonos", "hexagons"),
+            ("Blobs", "blobs"),
+            ("Voronoi", "voronoi"),
             ("Triangulos libres", "triangles"),
             ("Triangulos equilateros", "equilateral-triangles"),
             ("Triangulos rectangulos", "right-triangles"),
