@@ -1580,11 +1580,18 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         return shapes.get(orientation, shapes["tetromino-o"])
 
     def tetromino_path(self, cr, width, height, orientation):
-        cell = min(width, height) / 4.0
-        origin_x = (width - (cell * 4.0)) / 2.0
-        origin_y = (height - (cell * 4.0)) / 2.0
-        for col, row in self.tetromino_cells(orientation):
-            cr.rectangle(origin_x + (col * cell), origin_y + (row * cell), cell, cell)
+        cells = self.tetromino_cells(orientation)
+        min_col = min(col for col, _row in cells)
+        min_row = min(row for _col, row in cells)
+        max_col = max(col for col, _row in cells)
+        max_row = max(row for _col, row in cells)
+        span_cols = max(1, max_col - min_col + 1)
+        span_rows = max(1, max_row - min_row + 1)
+        cell = min(width / span_cols, height / span_rows)
+        origin_x = (width - (cell * span_cols)) / 2.0
+        origin_y = (height - (cell * span_rows)) / 2.0
+        for col, row in cells:
+            cr.rectangle(origin_x + ((col - min_col) * cell), origin_y + ((row - min_row) * cell), cell, cell)
 
     def blob_path(self, cr, width, height):
         pad_x = width * 0.05
@@ -1635,12 +1642,19 @@ class SimpleMirrorTile(Gtk.DrawingArea):
         if self.triangle_orientation == "voronoi":
             return self.point_in_polygon(x, y, self.voronoi_points(width, height))
         if self.triangle_orientation and self.triangle_orientation.startswith("tetromino-"):
-            cell = min(width, height) / 4.0
-            origin_x = (width - (cell * 4.0)) / 2.0
-            origin_y = (height - (cell * 4.0)) / 2.0
+            cells = self.tetromino_cells(self.triangle_orientation)
+            min_col = min(col for col, _row in cells)
+            min_row = min(row for _col, row in cells)
+            max_col = max(col for col, _row in cells)
+            max_row = max(row for _col, row in cells)
+            span_cols = max(1, max_col - min_col + 1)
+            span_rows = max(1, max_row - min_row + 1)
+            cell = min(width / span_cols, height / span_rows)
+            origin_x = (width - (cell * span_cols)) / 2.0
+            origin_y = (height - (cell * span_rows)) / 2.0
             col = int((x - origin_x) // max(1.0, cell))
             row = int((y - origin_y) // max(1.0, cell))
-            return (col, row) in self.tetromino_cells(self.triangle_orientation)
+            return (col + min_col, row + min_row) in cells
         if self.triangle_orientation == "hex":
             if y <= height / 2.0:
                 inset = (0.25 * width) * (1.0 - (y / max(1.0, height / 2.0)))
@@ -3075,37 +3089,58 @@ class SimpleLauncherPanel:
         self.win.queue_resize()
 
     def fit_tetromino_layout(self, width, height):
-        shapes = ("tetromino-l", "tetromino-t", "tetromino-s", "tetromino-i", "tetromino-o")
         visible_tiles = self.visible_tiles()
         for tile in self.tiles:
             tile.set_visible(tile in visible_tiles)
             tile.set_triangle_orientation(None)
         entries = self.layout_entries()
-        columns, rows, edge = self.choose_square_grid_shape(width, height, entries)
-        self.current_columns = columns
-        self.current_rows = rows
-        self.tile_width = clamp(edge, MIN_TILE_WIDTH, MAX_TILE_WIDTH, self.tile_width)
-        self.tile_height = clamp(edge, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, self.tile_height)
-        tile_index = 0
-        for widget, index, span in self.iter_layout_positions(entries, columns):
-            row = index // columns
-            column = index % columns
-            x = int(round(column * self.tile_width))
-            y = int(round(row * self.tile_height))
+        piece_count = max(1, len(entries))
+        best = None
+        max_piece_columns = min(piece_count, self.max_layout_columns or piece_count)
+        for piece_columns in range(1, max_piece_columns + 1):
+            piece_rows = int(math.ceil(float(piece_count) / piece_columns))
+            if self.max_layout_rows is not None and piece_rows > self.max_layout_rows:
+                continue
+            micro_columns = piece_columns * 2
+            micro_rows = piece_rows * 2
+            cell = min(max(1, width) / micro_columns, max(1, height) / micro_rows)
+            empty_pieces = (piece_columns * piece_rows) - piece_count
+            score = (cell * cell * piece_count * 4) - (empty_pieces * cell * 0.12)
+            if best is None or score > best[0]:
+                best = (score, piece_columns, piece_rows, cell)
+        if best is None:
+            piece_columns = max(1, min(piece_count, self.max_layout_columns or piece_count))
+            piece_rows = int(math.ceil(float(piece_count) / piece_columns))
+            cell = min(max(1, width) / (piece_columns * 2), max(1, height) / max(1, piece_rows * 2))
+        else:
+            _score, piece_columns, piece_rows, cell = best
+
+        self.current_columns = piece_columns
+        self.current_rows = piece_rows
+        piece_width = clamp(cell * 2, MIN_TILE_WIDTH, MAX_TILE_WIDTH, self.tile_width)
+        piece_height = clamp(cell * 2, MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, self.tile_height)
+        self.tile_width = piece_width
+        self.tile_height = piece_height
+
+        for index, (widget, _units) in enumerate(entries):
+            row = index // piece_columns
+            column = index % piece_columns
+            x = int(round(column * piece_width))
+            y = int(round(row * piece_height))
             if isinstance(widget, SimpleMirrorTile):
-                widget.set_triangle_orientation(shapes[tile_index % len(shapes)])
-                widget.set_layout_size(self.tile_width, self.tile_height)
+                widget.set_triangle_orientation("tetromino-o")
+                widget.set_layout_size(piece_width, piece_height)
                 self.grid.move(widget, x, y)
                 widget.show()
-                tile_index += 1
                 continue
-            width_px = self.tile_width * max(1, span)
-            widget.set_size_request(max(1, int(width_px)), max(1, int(self.tile_height)))
+            width_px = piece_width
+            height_px = piece_height
+            widget.set_size_request(max(1, int(width_px)), max(1, int(height_px)))
             if isinstance(widget, LauncherGrid):
-                widget.set_layout_size(width_px, self.tile_height)
+                widget.set_layout_size(width_px, height_px)
             self.grid.move(widget, x, y)
             if widget is self.tint2_slot:
-                self.update_tint2_target_rect(x, y, width_px, self.tile_height)
+                self.update_tint2_target_rect(x, y, width_px, height_px)
         self.clock_slot.set_visible(self.show_clock)
         self.launcher_grid.set_visible(self.show_launchers)
         self.tint2_slot.set_visible(self.show_tint2 and self.tint2_in_cell())
